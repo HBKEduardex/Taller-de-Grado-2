@@ -1,0 +1,8 @@
+<Robot Seq="1" Mode="AxisStream">
+  <Data>
+    <Axis A1="0.00" A2="-90.00" A3="90.00" A4="0.00" A5="0.00" A6="0.00"/>
+    <Position X="1000.12" Y="0.00" Z="500.00" A="0.00" B="90.00" C="0.00"/>
+  </Data>
+  <Status>12345678</Status>
+  <Mode>T1</Mode>
+</Robot>

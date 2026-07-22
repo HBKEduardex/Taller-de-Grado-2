@@ -1,0 +1,21 @@
+# ROS2 Workspace Build Directories
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env/
+
+# IDEs / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo

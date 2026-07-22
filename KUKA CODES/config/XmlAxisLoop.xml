@@ -1,0 +1,27 @@
+<ETHERNETKRL>
+	<CONFIGURATION>
+		<EXTERNAL>
+			<IP>192.168.250.30</IP>
+			<PORT>59152</PORT>
+		</EXTERNAL>
+	</CONFIGURATION>
+	<SEND>
+		<XML>
+			<ELEMENT Tag="Robot/Seq"/>
+			<ELEMENT Tag="Robot/Data/Axis/@A1"/>
+			<ELEMENT Tag="Robot/Data/Axis/@A2"/>
+			<ELEMENT Tag="Robot/Data/Axis/@A3"/>
+			<ELEMENT Tag="Robot/Data/Axis/@A4"/>
+			<ELEMENT Tag="Robot/Data/Axis/@A5"/>
+			<ELEMENT Tag="Robot/Data/Axis/@A6"/>
+			<ELEMENT Tag="Robot/Data/Position/@X"/>
+			<ELEMENT Tag="Robot/Data/Position/@Y"/>
+			<ELEMENT Tag="Robot/Data/Position/@Z"/>
+			<ELEMENT Tag="Robot/Data/Position/@A"/>
+			<ELEMENT Tag="Robot/Data/Position/@B"/>
+			<ELEMENT Tag="Robot/Data/Position/@C"/>
+			<ELEMENT Tag="Robot/Status"/>
+			<ELEMENT Tag="Robot/Mode"/>
+		</XML>
+	</SEND>
+</ETHERNETKRL>

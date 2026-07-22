@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────
+# KUKA EKI Axis Stream — ROS2 Parameters
+# ─────────────────────────────────────────────────────────────────────
+# Configuration for the eki_axis_stream node.
+# This is independent from eki_server.yaml (basic EKI example).
+#
+# Usage:
+#   ros2 launch kuka_eki_bridge axis_stream.launch.py
+# ─────────────────────────────────────────────────────────────────────
+
+eki_axis_stream:
+  ros__parameters:
+    # IP address to bind the TCP server.
+    bind_host: "0.0.0.0"
+
+    # TCP port (must match KUKA's XmlAxisLoop.xml <PORT>).
+    port: 59152
+
+    # Size of the TCP receive buffer in bytes.
+    receive_buffer_size: 8192
+
+    # Log the raw XML string to the console (verbose, usually off).
+    log_raw_xml: false
+
+    # Log pretty-printed XML to the console (verbose, usually off).
+    log_pretty_xml: false
+
+    # Log compact axis/position values to the console (recommended).
+    log_axis_values: true
+
+    # Publish raw XML to /kuka/axis_stream/raw_xml (std_msgs/String).
+    publish_raw_xml: true
+
+    # Publish sensor_msgs/JointState to /joint_states.
+    # Set to true when integrating with MoveIt2 or RViz.
+    publish_joint_states: false
+
+    # Send a minimal <Sensor> response after each message.
+    # Default is false — the KUKA streams without expecting responses.
+    send_response: false

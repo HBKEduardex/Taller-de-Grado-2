@@ -1,0 +1,13 @@
+<!-- Example: XML message received from KUKA in axis_command_loop mode.
+     The KUKA sends this every cycle while XmlAxisCommandLoop.src is running.
+     Ubuntu receives this on TCP port 59153.
+-->
+<Robot>
+  <Seq>1</Seq>
+  <Mode>CommandLoop</Mode>
+  <Data>
+    <AxisActual A1="0.0" A2="-90.0" A3="90.0" A4="0.0" A5="0.0" A6="0.0"/>
+    <PositionActual X="674.68" Y="-2.33" Z="885.20" A="0.0" B="0.0" C="0.0"/>
+  </Data>
+  <Status>1</Status>
+</Robot>

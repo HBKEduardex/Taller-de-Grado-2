@@ -1,0 +1,42 @@
+<ETHERNETKRL>
+	<CONFIGURATION>
+		<EXTERNAL>
+			<IP>192.168.250.30</IP>
+			<PORT>59153</PORT>
+		</EXTERNAL>
+	</CONFIGURATION>
+	<RECEIVE>
+		<XML>
+			<ELEMENT Tag="Command/Seq" Type="INT"/>
+			<ELEMENT Tag="Command/Mode" Type="STRING"/>
+			<ELEMENT Tag="Command/EnableMove" Type="BOOL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A1" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A2" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A3" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A4" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A5" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A6" Type="REAL"/>
+		</XML>
+	</RECEIVE>
+	<SEND>
+		<XML>
+			<ELEMENT Tag="Robot/Seq"/>
+			<ELEMENT Tag="Robot/Mode"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A1"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A2"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A3"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A4"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A5"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A6"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@X"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@Y"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@Z"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@A"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@B"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@C"/>
+			<ELEMENT Tag="Robot/Status"/>
+			<ELEMENT Tag="Robot/MoveReady"/>
+			<ELEMENT Tag="Robot/LimitsOK"/>
+		</XML>
+	</SEND>
+</ETHERNETKRL>

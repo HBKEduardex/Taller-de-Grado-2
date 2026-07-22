@@ -1,0 +1,207 @@
+&ACCESS RV
+&REL 1
+&PARAM DISKPATH = KRC:\R1\Program
+&PARAM SensorITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF XmlAxisMove( )
+
+;FOLD Declaration
+  INT i
+  INT seq
+  INT cmdSeq
+
+  DECL EKI_STATUS RET
+
+  CHAR cmdMode[64]
+  BOOL enableMove
+  BOOL limitsOK
+  BOOL readyToMove
+
+  REAL targetA1
+  REAL targetA2
+  REAL targetA3
+  REAL targetA4
+  REAL targetA5
+  REAL targetA6
+
+  REAL errorA1
+  REAL errorA2
+  REAL errorA3
+  REAL errorA4
+  REAL errorA5
+  REAL errorA6
+;ENDFOLD (Declaration)
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+  BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Receives target joints from Ubuntu/ROS2.
+    ;This version validates only. No physical movement.
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+;FOLD Initialize data
+  FOR i=(1) TO (64)
+    cmdMode[i]=0
+  ENDFOR
+
+  seq = 0
+  cmdSeq = 0
+
+  enableMove = TRUE
+  limitsOK = TRUE
+  readyToMove = TRUE
+
+  targetA1 = 0.0
+  targetA2 = -90.0
+  targetA3 = 90.0
+  targetA4 = 0.0
+  targetA5 = 0.0
+  targetA6 = 0.0
+
+  errorA1 = 0.0
+  errorA2 = 0.0
+  errorA3 = 0.0
+  errorA4 = 0.0
+  errorA5 = 0.0
+  errorA6 = 0.0
+;ENDFOLD (Initialize data)
+
+RET=EKI_Init("XmlAxisMove")
+RET=EKI_Open("XmlAxisMove")
+
+;FOLD Move validation loop
+LOOP
+
+  seq = seq + 1
+
+  ;FOLD Send actual robot position to Ubuntu
+    RET=EKI_SetInt("XmlAxisMove","Robot/Seq",seq)
+    RET=EKI_SetString("XmlAxisMove","Robot/Mode","AxisMoveCheck")
+
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/AxisActual/@A1",$AXIS_ACT.A1)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/AxisActual/@A2",$AXIS_ACT.A2)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/AxisActual/@A3",$AXIS_ACT.A3)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/AxisActual/@A4",$AXIS_ACT.A4)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/AxisActual/@A5",$AXIS_ACT.A5)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/AxisActual/@A6",$AXIS_ACT.A6)
+
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/PositionActual/@X",$POS_ACT.X)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/PositionActual/@Y",$POS_ACT.Y)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/PositionActual/@Z",$POS_ACT.Z)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/PositionActual/@A",$POS_ACT.A)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/PositionActual/@B",$POS_ACT.B)
+    RET=EKI_SetReal("XmlAxisMove","Robot/Data/PositionActual/@C",$POS_ACT.C)
+
+    RET=EKI_SetInt("XmlAxisMove","Robot/Status",1)
+    RET=EKI_SetBool("XmlAxisMove","Robot/MoveReady",readyToMove)
+    RET=EKI_SetBool("XmlAxisMove","Robot/LimitsOK",limitsOK)
+
+    RET=EKI_Send("XmlAxisMove","Robot")
+  ;ENDFOLD (Send actual robot position to Ubuntu)
+
+  WAIT SEC 0.1
+
+  ;FOLD Receive target command from Ubuntu
+    RET=EKI_GetInt("XmlAxisMove","Command/Seq",cmdSeq)
+    RET=EKI_GetString("XmlAxisMove","Command/Mode",cmdMode[])
+    RET=EKI_GetBool("XmlAxisMove","Command/EnableMove",enableMove)
+
+    RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A1",targetA1)
+    RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A2",targetA2)
+    RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A3",targetA3)
+    RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A4",targetA4)
+    RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A5",targetA5)
+    RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A6",targetA6)
+  ;ENDFOLD (Receive target command from Ubuntu)
+
+  ;FOLD Validate limits
+    limitsOK = TRUE
+
+    IF targetA1 < -20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA1 > 20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA2 < -110.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA2 > -70.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA3 < 70.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA3 > 110.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA4 < -20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA4 > 20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA5 < -20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA5 > 20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA6 < -20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA6 > 20.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    readyToMove = FALSE
+
+    IF enableMove == TRUE THEN
+      IF limitsOK == TRUE THEN
+        readyToMove = TRUE
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Validate limits)
+
+  ;FOLD Calculate error target - actual
+    errorA1 = targetA1 - $AXIS_ACT.A1
+    errorA2 = targetA2 - $AXIS_ACT.A2
+    errorA3 = targetA3 - $AXIS_ACT.A3
+    errorA4 = targetA4 - $AXIS_ACT.A4
+    errorA5 = targetA5 - $AXIS_ACT.A5
+    errorA6 = targetA6 - $AXIS_ACT.A6
+  ;ENDFOLD (Calculate error target - actual)
+
+  ;FOLD Movement authorization status
+    ; Esta versión NO mueve el robot.
+    ; Solo valida que el target recibido desde la GUI es correcto.
+    ;
+    ; Variables para revisar:
+    ; cmdSeq
+    ; enableMove
+    ; limitsOK
+    ; readyToMove
+    ; targetA1 ... targetA6
+    ; errorA1 ... errorA6
+    ;
+    ; Cuando el responsable del robot autorice movimiento real,
+    ; el bloque de movimiento articular debe agregarse aquí.
+  ;ENDFOLD (Movement authorization status)
+
+  WAIT SEC 0.1
+
+ENDLOOP
+;ENDFOLD (Move validation loop)
+
+RET=EKI_Close("XmlAxisMove")
+RET=EKI_Clear("XmlAxisMove")
+
+END

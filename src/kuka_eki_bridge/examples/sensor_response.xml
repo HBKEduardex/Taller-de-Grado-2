@@ -1,0 +1,18 @@
+<Sensor>
+  <Message>Example message</Message>
+  <Positions>
+    <Current X="4645.2"/>
+    <Before>
+      <X>123.4</X>
+    </Before>
+  </Positions>
+  <Nmb>8</Nmb>
+  <Status>
+    <IsActive>1</IsActive>
+  </Status>
+  <Read>
+    <xyzabc X="210.3" Y="825.3" Z="234.3" A="84.2" B="12.3" C="43.5"/>
+  </Read>
+  <Show error="0" temp="25">OK</Show>
+  <Free>2912</Free>
+</Sensor>

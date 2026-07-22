@@ -1,0 +1,42 @@
+&ACCESS RV
+&REL 1
+&PARAM DISKPATH = KRC:\R1\Program
+&PARAM SensorITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF BinaryStream( )
+;FOLD Declaration
+  INT i
+  DECL EKI_STATUS RET
+  CHAR Bytes[64]
+;ENDFOLD (Declaration)
+
+;FOLD INI 
+  ;FOLD BASISTECH INI   
+  BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+;FOLD Initialize sample data
+ FOR i=(1) TO (64)  
+  Bytes[i]=0
+ ENDFOR   
+;ENDFOLD (Initialize sample data)
+
+RET=EKI_Init("BinaryStream")
+RET=EKI_Open("BinaryStream")
+
+Bytes[]="Stream ends with CR,LF"
+
+RET = EKI_Send("BinaryStream",Bytes[])
+
+WAIT FOR $FLAG[1]
+RET=EKI_GetString("BinaryStream","Buffer",Bytes[])
+$FLAG[1]=FALSE
+
+RET=EKI_Close("BinaryStream")
+RET=EKI_Clear("BinaryStream")
+END

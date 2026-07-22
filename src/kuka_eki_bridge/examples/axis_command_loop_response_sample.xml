@@ -1,0 +1,11 @@
+<!-- Example: XML response sent from Ubuntu to KUKA in axis_command_loop mode.
+     Ubuntu sends this every cycle as a reply to each <Robot> message.
+     EnableMove=0 when safe_mode=true (always).
+     The KUKA program reads AxisTarget and EnableMove.
+-->
+<Command>
+  <Seq>1</Seq>
+  <Mode>AxisTarget</Mode>
+  <EnableMove>0</EnableMove>
+  <AxisTarget A1="0.0000" A2="-90.0000" A3="90.0000" A4="0.0000" A5="0.0000" A6="0.0000"/>
+</Command>

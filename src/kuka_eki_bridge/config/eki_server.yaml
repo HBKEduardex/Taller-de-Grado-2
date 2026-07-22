@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────
+# KUKA EKI XML Server — ROS2 Parameters
+# ─────────────────────────────────────────────────────────────────────
+# This configuration file defines the parameters for the eki_xml_server
+# node. It controls the TCP server binding, response XML, and logging.
+#
+# To use with the launch file:
+#   ros2 launch kuka_eki_bridge eki_server.launch.py
+#
+# Parameters can also be overridden from the command line:
+#   ros2 launch kuka_eki_bridge eki_server.launch.py port:=59152
+# ─────────────────────────────────────────────────────────────────────
+
+eki_xml_server:
+  ros__parameters:
+    # IP address to bind the TCP server.
+    # Use "0.0.0.0" to accept connections on all interfaces.
+    bind_host: "0.0.0.0"
+
+    # TCP port for the server. Must match the KUKA's XmlTransmit.xml <PORT>.
+    port: 59152
+
+    # Optional path to a custom Sensor response XML file.
+    # If empty or file not found, a built-in default response is used.
+    response_xml_path: ""
+
+    # Log the raw XML string as received from the KUKA.
+    log_raw_xml: true
+
+    # Pretty-print the received XML with indentation.
+    pretty_print_xml: true
+
+    # Size of the TCP receive buffer in bytes.
+    receive_buffer_size: 8192
+
+    # If true, the server keeps accepting new connections after a
+    # client disconnects. Set to false for a single-shot test.
+    keep_running: true

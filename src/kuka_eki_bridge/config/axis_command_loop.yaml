@@ -1,0 +1,46 @@
+# axis_command_loop configuration for kuka_eki_bridge
+
+axis_command_loop:
+  ros__parameters:
+
+    # ── TCP server ────────────────────────────────────────────────────
+    bind_host: "0.0.0.0"
+    port: 59153
+    receive_buffer_size: 8192
+
+    # ── ROS2 topics ───────────────────────────────────────────────────
+    target_topic: "/kuka/axis_command/target_json"
+    feedback_topic: "/kuka/axis_command_loop/feedback_json"
+    raw_robot_xml_topic: "/kuka/axis_command_loop/raw_robot_xml"
+    raw_command_xml_topic: "/kuka/axis_command_loop/raw_command_xml"
+
+    # ── Logging ───────────────────────────────────────────────────────
+    log_feedback_values: true
+    log_raw_xml: false
+    log_command_xml: true
+
+    # ── Safety ────────────────────────────────────────────────────────
+    # If safe_mode is true, EnableMove is ALWAYS sent as 0 to the KUKA,
+    # regardless of what the GUI requests.
+    safe_mode: true
+    enable_move_default: false
+
+    # ── Default target (HOME position, used when no GUI target available)
+    default_target_deg:
+      A1: 0.0
+      A2: -90.0
+      A3: 90.0
+      A4: 0.0
+      A5: 0.0
+      A6: 0.0
+
+    # ── Soft limits [min_deg, max_deg] per joint ──────────────────────
+    # Targets outside these limits are rejected without updating the
+    # stored target.
+    soft_limits_deg:
+      A1: [-20.0, 20.0]
+      A2: [-110.0, -70.0]
+      A3: [70.0, 110.0]
+      A4: [-20.0, 20.0]
+      A5: [-20.0, 20.0]
+      A6: [-20.0, 20.0]

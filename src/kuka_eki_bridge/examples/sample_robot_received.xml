@@ -1,0 +1,7 @@
+<Robot>
+  <Data>
+    <ActPos X="1000.12" Y="0.0" Z="500.0" A="0.0" B="90.0" C="0.0"/>
+  </Data>
+  <Status>12345678</Status>
+  <Mode>T1</Mode>
+</Robot>

@@ -1,0 +1,80 @@
+&ACCESS RV
+&REL 1
+&PARAM DISKPATH = KRC:\R1\Program
+&PARAM SensorITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF XmlAxisLoop( )
+
+;FOLD Declaration
+  INT seq
+  DECL EKI_STATUS RET
+  DECL AXIS axisNow
+  DECL E6POS posNow
+;ENDFOLD (Declaration)
+
+;FOLD Communicated data
+;FOLD Send to external program
+; <Robot>
+  ; <Seq>...</Seq>
+  ; <Data>
+    ; <Axis A1="..." A2="..." A3="..." A4="..." A5="..." A6="..." />
+    ; <Position X="..." Y="..." Z="..." A="..." B="..." C="..." />
+  ; </Data>
+  ; <Status>1</Status>
+  ; <Mode>AxisStream</Mode>
+; </Robot>
+;ENDFOLD (Send to external program)
+;ENDFOLD (Communicated data)
+
+;FOLD INI  
+  ;FOLD BASISTECH INI  
+  BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Streaming only. No robot motion commands.
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+seq = 0
+
+RET=EKI_Init("XmlAxisLoop")
+RET=EKI_Open("XmlAxisLoop")
+
+;FOLD Streaming loop
+LOOP
+
+  seq = seq + 1
+
+  axisNow = $AXIS_ACT
+  posNow = $POS_ACT
+
+  RET=EKI_SetInt("XmlAxisLoop","Robot/Seq",seq)
+
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Axis/@A1",axisNow.A1)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Axis/@A2",axisNow.A2)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Axis/@A3",axisNow.A3)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Axis/@A4",axisNow.A4)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Axis/@A5",axisNow.A5)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Axis/@A6",axisNow.A6)
+
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Position/@X",posNow.X)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Position/@Y",posNow.Y)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Position/@Z",posNow.Z)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Position/@A",posNow.A)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Position/@B",posNow.B)
+  RET=EKI_SetReal("XmlAxisLoop","Robot/Data/Position/@C",posNow.C)
+
+  RET=EKI_SetInt("XmlAxisLoop","Robot/Status",1)
+  RET=EKI_SetString("XmlAxisLoop","Robot/Mode","AxisStream")
+
+  RET=EKI_Send("XmlAxisLoop","Robot")
+
+  WAIT SEC 0.2
+
+ENDLOOP
+;ENDFOLD (Streaming loop)
+
+RET=EKI_Close("XmlAxisLoop")
+RET=EKI_Clear("XmlAxisLoop")
+
+END
