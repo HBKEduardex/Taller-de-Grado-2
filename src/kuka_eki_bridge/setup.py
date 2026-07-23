@@ -34,6 +34,7 @@ setup(
             'eki_xml_server_node = kuka_eki_bridge.eki_xml_server_node:main',
             'eki_axis_stream_node = kuka_eki_bridge.eki_axis_stream_node:main',
             'eki_axis_command_loop_node = kuka_eki_bridge.eki_axis_command_loop_node:main',
+            'eki_axis_move_node = kuka_eki_bridge.eki_axis_move_node:main',
         ],
     },
 )

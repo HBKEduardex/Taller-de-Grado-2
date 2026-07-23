@@ -1,0 +1,53 @@
+# gui_axis_move configuration for kuka_gui_control
+# Used with the XmlAxisMove bridge mode
+
+kuka_gui_control:
+  ros__parameters:
+
+    # ── ROS2 topics ───────────────────────────────────────────────────
+    command_topic: "/kuka/axis_move/target_json"
+    feedback_topic: "/kuka/axis_move/feedback_json"
+    raw_command_xml_topic: "/kuka/axis_move/raw_command_xml"
+    raw_feedback_xml_topic: "/kuka/axis_move/raw_robot_xml"
+
+    # ── Publishing behaviour ──────────────────────────────────────────
+    auto_publish_hz: 2.0
+    step_deg: 1.0
+
+    enable_move_default: false
+    require_confirmation_for_first_send: true
+
+    allow_auto_mode: true
+    allow_auto_motion: false
+
+    # ── Home / initial position ───────────────────────────────────────
+    home_joints_deg:
+      A1: 0.0
+      A2: -90.0
+      A3: 90.0
+      A4: 0.0
+      A5: 0.0
+      A6: 0.0
+
+    # ── Soft limits [min_deg, max_deg] per joint ──────────────────────
+    soft_limits_deg:
+      A1: [-20.0, 20.0]
+      A2: [-110.0, -70.0]
+      A3: [70.0, 110.0]
+      A4: [-20.0, 20.0]
+      A5: [-20.0, 20.0]
+      A6: [-20.0, 20.0]
+
+    # ── Max delta (max degrees per command) ───────────────────────────
+    max_delta_deg:
+      A1: 2.0
+      A2: 2.0
+      A3: 2.0
+      A4: 2.0
+      A5: 2.0
+      A6: 2.0
+
+    # ── UI options ────────────────────────────────────────────────────
+    feedback_timeout_sec: 2.0
+    show_raw_json: true
+    show_raw_xml: true

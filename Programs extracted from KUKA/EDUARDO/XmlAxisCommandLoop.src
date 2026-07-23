@@ -1,0 +1,139 @@
+&ACCESS RVP
+&REL 1
+&PARAM SensorITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+&PARAM DISKPATH = KRC:\R1\Program
+DEF XmlAxisCommandLoop( )
+
+;FOLD Declaration
+  INT i
+  INT seq
+  INT cmdSeq
+
+  DECL EKI_STATUS RET
+
+  CHAR cmdMode[64]
+  BOOL enableMove
+
+  REAL targetA1
+  REAL targetA2
+  REAL targetA3
+  REAL targetA4
+  REAL targetA5
+  REAL targetA6
+;ENDFOLD (Declaration)
+
+;FOLD Communicated data
+;FOLD Send actual robot data to Ubuntu
+; <Robot>
+  ; <Seq>...</Seq>
+  ; <Mode>CommandLoop</Mode>
+  ; <Data>
+    ; <AxisActual A1="..." A2="..." A3="..." A4="..." A5="..." A6="..." />
+    ; <PositionActual X="..." Y="..." Z="..." A="..." B="..." C="..." />
+  ; </Data>
+  ; <Status>1</Status>
+; </Robot>
+;ENDFOLD (Send actual robot data to Ubuntu)
+
+;FOLD Receive target command from Ubuntu
+; <Command>
+  ; <Seq>...</Seq>
+  ; <Mode>AxisTarget</Mode>
+  ; <EnableMove>0</EnableMove>
+  ; <AxisTarget A1="..." A2="..." A3="..." A4="..." A5="..." A6="..." />
+; </Command>
+;ENDFOLD (Receive target command from Ubuntu)
+;ENDFOLD (Communicated data)
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+  BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Command loop test only.
+    ;No PTP, LIN or CIRC movement commands.
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+;FOLD Initialize data
+  FOR i=(1) TO (64)
+    cmdMode[i]=0
+  ENDFOR
+
+  seq = 0
+  cmdSeq = 0
+  enableMove = FALSE
+
+  targetA1 = 0.0
+  targetA2 = -90.0
+  targetA3 = 90.0
+  targetA4 = 0.0
+  targetA5 = 0.0
+  targetA6 = 0.0
+;ENDFOLD (Initialize data)
+
+RET=EKI_Init("XmlAxisCommandLoop")
+RET=EKI_Open("XmlAxisCommandLoop")
+
+;FOLD Command feedback loop
+LOOP
+
+  seq = seq + 1
+
+  ;FOLD Send actual robot position to Ubuntu
+    RET=EKI_SetInt("XmlAxisCommandLoop","Robot/Seq",seq)
+
+    RET=EKI_SetString("XmlAxisCommandLoop","Robot/Mode","CommandLoop")
+
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/AxisActual/@A1",$AXIS_ACT.A1)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/AxisActual/@A2",$AXIS_ACT.A2)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/AxisActual/@A3",$AXIS_ACT.A3)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/AxisActual/@A4",$AXIS_ACT.A4)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/AxisActual/@A5",$AXIS_ACT.A5)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/AxisActual/@A6",$AXIS_ACT.A6)
+
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/PositionActual/@X",$POS_ACT.X)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/PositionActual/@Y",$POS_ACT.Y)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/PositionActual/@Z",$POS_ACT.Z)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/PositionActual/@A",$POS_ACT.A)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/PositionActual/@B",$POS_ACT.B)
+    RET=EKI_SetReal("XmlAxisCommandLoop","Robot/Data/PositionActual/@C",$POS_ACT.C)
+
+    RET=EKI_SetInt("XmlAxisCommandLoop","Robot/Status",1)
+
+    RET=EKI_Send("XmlAxisCommandLoop","Robot")
+  ;ENDFOLD (Send actual robot position to Ubuntu)
+
+  WAIT SEC 0.1
+
+  ;FOLD Receive target command from Ubuntu
+    RET=EKI_GetInt("XmlAxisCommandLoop","Command/Seq",cmdSeq)
+    RET=EKI_GetString("XmlAxisCommandLoop","Command/Mode",cmdMode[])
+    RET=EKI_GetBool("XmlAxisCommandLoop","Command/EnableMove",enableMove)
+
+    RET=EKI_GetReal("XmlAxisCommandLoop","Command/AxisTarget/@A1",targetA1)
+    RET=EKI_GetReal("XmlAxisCommandLoop","Command/AxisTarget/@A2",targetA2)
+    RET=EKI_GetReal("XmlAxisCommandLoop","Command/AxisTarget/@A3",targetA3)
+    RET=EKI_GetReal("XmlAxisCommandLoop","Command/AxisTarget/@A4",targetA4)
+    RET=EKI_GetReal("XmlAxisCommandLoop","Command/AxisTarget/@A5",targetA5)
+    RET=EKI_GetReal("XmlAxisCommandLoop","Command/AxisTarget/@A6",targetA6)
+  ;ENDFOLD (Receive target command from Ubuntu)
+
+  ;FOLD Safety note
+    ;Only reading received target values.
+    ;No robot movement is executed in this program.
+    ;Variables available for checking:
+    ;cmdSeq, cmdMode, enableMove
+    ;targetA1, targetA2, targetA3, targetA4, targetA5, targetA6
+  ;ENDFOLD (Safety note)
+
+  WAIT SEC 0.1
+
+ENDLOOP
+;ENDFOLD (Command feedback loop)
+
+RET=EKI_Close("XmlAxisCommandLoop")
+RET=EKI_Clear("XmlAxisCommandLoop")
+
+END

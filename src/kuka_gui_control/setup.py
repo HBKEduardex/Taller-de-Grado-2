@@ -30,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'gui_control_node = kuka_gui_control.gui_control_node:main',
+            'gui_axis_move_node = kuka_gui_control.gui_axis_move_node:main',
         ],
     },
 )

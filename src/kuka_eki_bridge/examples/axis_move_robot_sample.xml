@@ -1,0 +1,28 @@
+<!-- Sample <Robot> XML sent by KUKA XmlAxisMove.src to Ubuntu.
+
+  This is what the bridge receives on port 59153 each cycle (~100 ms).
+
+  Fields:
+    Seq             - Cycle counter from KUKA.
+    Mode            - Always "AxisMove" for this program.
+    AxisActual      - Current joint positions A1-A6 in degrees.
+    PositionActual  - Current Cartesian position (X,Y,Z,A,B,C).
+    Status          - 1 = running.
+    MoveReady       - 1 = KUKA is ready to accept movement.
+    LimitsOK        - 1 = target is within KUKA soft limits.
+    DeltaOK         - 1 = target delta is within MAX_DELTA.
+    MoveExecuted    - 1 = last PTP command completed.
+-->
+<Robot>
+  <Seq>15</Seq>
+  <Mode>AxisMove</Mode>
+  <Data>
+    <AxisActual A1="0.0" A2="-90.0" A3="90.0" A4="0.0" A5="0.0" A6="0.0"/>
+    <PositionActual X="674.68" Y="-2.33" Z="885.20" A="0.0" B="0.0" C="0.0"/>
+  </Data>
+  <Status>1</Status>
+  <MoveReady>0</MoveReady>
+  <LimitsOK>1</LimitsOK>
+  <DeltaOK>1</DeltaOK>
+  <MoveExecuted>0</MoveExecuted>
+</Robot>

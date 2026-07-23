@@ -1,0 +1,60 @@
+# axis_move configuration for kuka_eki_bridge
+# Used with XmlAxisMove.src / XmlAxisMove.xml on the KUKA
+
+eki_axis_move:
+  ros__parameters:
+
+    # ── TCP server ─────────────────────────────────────────────────────
+    bind_host: "0.0.0.0"
+    port: 59153
+
+    receive_buffer_size: 8192
+
+    # ── ROS2 topics ────────────────────────────────────────────────────
+    target_topic: "/kuka/axis_move/target_json"
+    feedback_topic: "/kuka/axis_move/feedback_json"
+    raw_robot_xml_topic: "/kuka/axis_move/raw_robot_xml"
+    raw_command_xml_topic: "/kuka/axis_move/raw_command_xml"
+
+    # ── Logging ────────────────────────────────────────────────────────
+    log_feedback_values: true
+    log_raw_robot_xml: false
+    log_command_xml: true
+
+    # ── Safety ─────────────────────────────────────────────────────────
+    safe_mode: true
+    allow_motion_commands: true
+
+    default_enable_move: true
+
+    # ── Default target (home position) ─────────────────────────────────
+    default_target_deg:
+      A1: 0.0
+      A2: -90.0
+      A3: 90.0
+      A4: 0.0
+      A5: 0.0
+      A6: 0.0
+
+    # ── Soft limits [min_deg, max_deg] per joint ───────────────────────
+    soft_limits_deg:
+      A1: [-20.0, 20.0]
+      A2: [-110.0, -70.0]
+      A3: [70.0, 110.0]
+      A4: [-20.0, 20.0]
+      A5: [-20.0, 20.0]
+      A6: [-20.0, 20.0]
+
+    # ── Max delta (max degrees per command) ────────────────────────────
+    max_delta_deg:
+      A1: 10.0
+      A2: 10.0
+      A3: 10.0
+      A4: 10.0
+      A5: 10.0
+      A6: 10.0
+
+    # ── Seq validation ─────────────────────────────────────────────────
+    require_seq_positive: true
+    reject_repeated_seq: true
+    command_timeout_sec: 2.0

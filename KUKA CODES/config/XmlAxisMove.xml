@@ -37,6 +37,8 @@
 			<ELEMENT Tag="Robot/Status"/>
 			<ELEMENT Tag="Robot/MoveReady"/>
 			<ELEMENT Tag="Robot/LimitsOK"/>
+			<ELEMENT Tag="Robot/DeltaOK"/>
+			<ELEMENT Tag="Robot/MoveExecuted"/>
 		</XML>
 	</SEND>
 </ETHERNETKRL>

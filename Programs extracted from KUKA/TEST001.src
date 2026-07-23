@@ -1,0 +1,26 @@
+&ACCESS RVE
+&REL 1
+&PARAM EDITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF TEST001( )
+DECL FRAME pos1
+DECL REAL posx
+;FOLD INI;%{PE}
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3 
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+posx=100,0
+
+
+pos1={X posx,Y 0,Z 0,A 0,B 0,C 0}
+
+PTP pos1
+
+END

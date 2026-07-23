@@ -1,0 +1,81 @@
+&ACCESS RVP
+&REL 13
+&PARAM EDITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+&PARAM DISKPATH = KRC:\R1\Program
+DEF krl_test( )
+;FOLD Declaration
+  DECL EKI_STATUS RET
+  INT OFFSET
+  REAL ind
+  INT Counter
+  BOOL valueBool
+  INT i
+  REAL valueReal
+  CHAR Bytes[4]
+  FOR i=(1) TO (4)
+     Bytes[i]=0
+  ENDFOR
+  OFFSET=0
+  Counter=0
+  ind=0.0
+;ENDFOLD (Declaration)
+
+;FOLD INI;%{PE}
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+RET=EKI_Init("XmlServer")
+RET=EKI_Open("XmlServer")
+
+;FOLD SPTP P3 Vel=50 % PDAT3 Tool[1]:SMC Base[0] ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P3; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT3; Kuka.VelocityPtp=50; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP1 WITH $VEL_AXIS[1] = SVEL_JOINT(50.0), $TOOL = STOOL2(FP1), $BASE = SBASE(FP1.BASE_NO), $IPO_MODE = SIPO_MODE(FP1.IPO_FRAME), $LOAD = SLOAD(FP1.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT1), $APO = SAPO_PTP(PPDAT1), $GEAR_JERK[1] = SGEAR_JERK(PPDAT1), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+; wait until server is conntected
+REPEAT
+    wait for $FLAG[1]
+    REPEAT 
+    RET=EKI_GetString("XmlServer","number",Bytes[])
+    UNTIL (RET.Buff < 1)
+    OFFSET=0
+    CAST_FROM(Bytes[],OFFSET,valueReal)
+    Counter=Counter+1
+    IF valueReal == 1 THEN
+       PTP_REL {Z 10}
+    ENDIF
+    IF valueReal == 2 THEN 
+
+       PTP_REL {Z -10}
+    ENDIF
+    IF valueReal == 3 THEN
+       PTP_REL {Y 10}
+    ENDIF
+    IF valueReal == 4 THEN
+       PTP_REL {Y -10}
+    ENDIF
+UNTIL (Counter > 10)
+IF valueReal >0 THEN
+    valueBool=TRUE
+
+ENDIF
+
+
+
+
+wait for valueBool
+; wait until server is deconnected
+wait for $FLAG[1]==FALSE
+
+RET=EKI_Clear("XmlServer")
+END

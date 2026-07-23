@@ -1,0 +1,26 @@
+<!-- Sample <Command> XML sent by Ubuntu bridge to KUKA XmlAxisMove.src.
+
+  This is what the bridge sends after each <Robot> message received.
+
+  Fields:
+    Seq         - Sequence number from the GUI command.
+    Mode        - Always "AxisTarget" for this program.
+    EnableMove  - 0 = no movement, 1 = execute PTP to AxisTarget.
+    AxisTarget  - Target joint positions A1-A6 in degrees.
+
+  IMPORTANT:
+    EnableMove will only be 1 when ALL conditions are met:
+      - safe_mode = false
+      - allow_motion_commands = true
+      - GUI enable_move = true
+      - Target within soft limits
+      - Delta within max_delta_deg
+      - Seq > 0 and not repeated
+      - Command is fresh (not timed out)
+-->
+<Command>
+  <Seq>25</Seq>
+  <Mode>AxisTarget</Mode>
+  <EnableMove>0</EnableMove>
+  <AxisTarget A1="0.0000" A2="-90.0000" A3="90.0000" A4="0.0000" A5="0.0000" A6="0.0000"/>
+</Command>
