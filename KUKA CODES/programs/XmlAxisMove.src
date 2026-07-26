@@ -252,6 +252,24 @@ LOOP
           PTP axisTarget
           lastMoveSeq = cmdSeq
           moveExecuted = TRUE
+
+          ; Drain stale commands that accumulated during PTP
+          RET=EKI_CheckBuffer("XmlAxisMove", "Command/Seq")
+          WHILE RET.Buff > 0
+            RET=EKI_GetInt("XmlAxisMove","Command/Seq",cmdSeq)
+            RET=EKI_GetString("XmlAxisMove","Command/Mode",cmdMode[])
+            RET=EKI_GetBool("XmlAxisMove","Command/EnableMove",enableMove)
+            RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A1",targetA1)
+            RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A2",targetA2)
+            RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A3",targetA3)
+            RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A4",targetA4)
+            RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A5",targetA5)
+            RET=EKI_GetReal("XmlAxisMove","Command/AxisTarget/@A6",targetA6)
+            RET=EKI_CheckBuffer("XmlAxisMove", "Command/Seq")
+          ENDWHILE
+          ; Update lastMoveSeq to the latest drained seq
+          lastMoveSeq = cmdSeq
+
         ENDIF
       ENDIF
     ELSE
