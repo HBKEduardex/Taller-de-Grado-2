@@ -68,12 +68,12 @@ DEF XmlAxisMove( )
   deltaOK = FALSE
   cmdReceived = FALSE
 
-  targetA1 = 0.0
-  targetA2 = -90.0
-  targetA3 = 90.0
-  targetA4 = 0.0
-  targetA5 = 0.0
-  targetA6 = 0.0
+  targetA1 = $AXIS_ACT.A1
+  targetA2 = $AXIS_ACT.A2
+  targetA3 = $AXIS_ACT.A3
+  targetA4 = $AXIS_ACT.A4
+  targetA5 = $AXIS_ACT.A5
+  targetA6 = $AXIS_ACT.A6
 
   errorA1 = 0.0
   errorA2 = 0.0
@@ -130,45 +130,45 @@ LOOP
   ;FOLD Validate limits
     limitsOK = TRUE
 
-    IF targetA1 < -20.0 THEN
+    IF targetA1 < -160.0 THEN
       limitsOK = FALSE
     ENDIF
-    IF targetA1 > 20.0 THEN
-      limitsOK = FALSE
-    ENDIF
-
-    IF targetA2 < -110.0 THEN
-      limitsOK = FALSE
-    ENDIF
-    IF targetA2 > -70.0 THEN
+    IF targetA1 > 160.0 THEN
       limitsOK = FALSE
     ENDIF
 
-    IF targetA3 < 70.0 THEN
+    IF targetA2 < -180.0 THEN
       limitsOK = FALSE
     ENDIF
-    IF targetA3 > 110.0 THEN
-      limitsOK = FALSE
-    ENDIF
-
-    IF targetA4 < -20.0 THEN
-      limitsOK = FALSE
-    ENDIF
-    IF targetA4 > 20.0 THEN
+    IF targetA2 > 35.0 THEN
       limitsOK = FALSE
     ENDIF
 
-    IF targetA5 < -20.0 THEN
+    IF targetA3 < -110.0 THEN
       limitsOK = FALSE
     ENDIF
-    IF targetA5 > 20.0 THEN
+    IF targetA3 > 146.0 THEN
       limitsOK = FALSE
     ENDIF
 
-    IF targetA6 < -20.0 THEN
+    IF targetA4 < -175.0 THEN
       limitsOK = FALSE
     ENDIF
-    IF targetA6 > 20.0 THEN
+    IF targetA4 > 175.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA5 < -110.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA5 > 110.0 THEN
+      limitsOK = FALSE
+    ENDIF
+
+    IF targetA6 < -340.0 THEN
+      limitsOK = FALSE
+    ENDIF
+    IF targetA6 > 340.0 THEN
       limitsOK = FALSE
     ENDIF
   ;ENDFOLD (Validate limits)

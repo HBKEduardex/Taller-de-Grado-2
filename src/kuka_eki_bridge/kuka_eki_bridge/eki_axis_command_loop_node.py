@@ -69,12 +69,12 @@ class EkiAxisCommandLoopNode(Node):
         self.declare_parameter('default_target_deg.A6', 0.0)
 
         # Soft limits: [min, max] per joint — stored as flat params
-        self.declare_parameter('soft_limits_deg.A1', [-20.0, 20.0])
-        self.declare_parameter('soft_limits_deg.A2', [-110.0, -70.0])
-        self.declare_parameter('soft_limits_deg.A3', [70.0, 110.0])
-        self.declare_parameter('soft_limits_deg.A4', [-20.0, 20.0])
-        self.declare_parameter('soft_limits_deg.A5', [-20.0, 20.0])
-        self.declare_parameter('soft_limits_deg.A6', [-20.0, 20.0])
+        self.declare_parameter('soft_limits_deg.A1', [-160.0, 160.0])
+        self.declare_parameter('soft_limits_deg.A2', [-180.0, 35.0])
+        self.declare_parameter('soft_limits_deg.A3', [-110.0, 146.0])
+        self.declare_parameter('soft_limits_deg.A4', [-175.0, 175.0])
+        self.declare_parameter('soft_limits_deg.A5', [-110.0, 110.0])
+        self.declare_parameter('soft_limits_deg.A6', [-340.0, 340.0])
 
         # ── Read parameters ──────────────────────────────────────────
         self._host = self.get_parameter('bind_host').get_parameter_value().string_value

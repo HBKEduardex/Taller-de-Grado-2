@@ -1,0 +1,57 @@
+# gui_dual_kuka_rviz configuration for kuka_gui_control
+# Dual mode: KUKA Real TCP/IP + RViz/MoveIt2
+
+kuka_gui_dual_node:
+  ros__parameters:
+
+    # ── KUKA TCP/IP topics ────────────────────────────────────────────
+    kuka_target_topic: "/kuka/axis_move/target_json"
+    kuka_feedback_topic: "/kuka/axis_move/feedback_json"
+    kuka_raw_command_xml_topic: "/kuka/axis_move/raw_command_xml"
+    kuka_raw_robot_xml_topic: "/kuka/axis_move/raw_robot_xml"
+
+    # ── RViz / MoveIt2 topics ─────────────────────────────────────────
+    rviz_joint_command_topic: "/kuka_bridge/joint_command_deg"
+    rviz_cartesian_command_topic: "/kuka_bridge/cartesian_command_deg"
+    rviz_status_topic: "/kuka_bridge/status"
+    rviz_joint_state_topic: "/kuka_bridge/joint_state_deg"
+    rviz_cartesian_state_topic: "/kuka_bridge/cartesian_state_deg"
+
+    # ── Publishing behaviour ──────────────────────────────────────────
+    step_deg: 1.0
+    auto_publish_hz: 2.0
+
+    enable_move_default: false
+    require_confirmation_for_first_send: true
+
+    allow_auto_mode: true
+    allow_auto_motion: false
+
+    publish_to_rviz_default: true
+    publish_to_kuka_default: true
+
+    cartesian_to_kuka_enabled: false
+    cartesian_to_rviz_enabled: true
+
+    # ── Home position ─────────────────────────────────────────────────
+    home_joints_deg:
+      A1: 0.0
+      A2: -90.0
+      A3: 90.0
+      A4: 0.0
+      A5: 0.0
+      A6: 0.0
+
+    # ── Soft limits [min_deg, max_deg] per joint ──────────────────────
+    soft_limits_deg:
+      A1: [-160.0, 160.0]
+      A2: [-180.0, 35.0]
+      A3: [-110.0, 146.0]
+      A4: [-175.0, 175.0]
+      A5: [-110.0, 110.0]
+      A6: [-340.0, 340.0]
+
+    # ── UI options ────────────────────────────────────────────────────
+    feedback_timeout_sec: 2.0
+    show_raw_json: true
+    show_raw_xml: true

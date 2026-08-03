@@ -233,6 +233,7 @@ class AxisMoveGuiWindow(QMainWindow):
         self._send_hold_count = 0
         self._first_send_confirmed = False
         self._enable_move_confirmed = False
+        self._synced_to_robot = False
 
         # Config values
         self._auto_hz = config.get('auto_publish_hz', 2.0)
@@ -783,6 +784,20 @@ class AxisMoveGuiWindow(QMainWindow):
             return
 
         self._model.update_feedback(fb)
+
+        # On first feedback, sync targets to robot's actual position
+        if not self._synced_to_robot:
+            axis_actual = fb.get('axis_actual', {})
+            synced = False
+            for a in AXES:
+                val = axis_actual.get(a)
+                if val is not None:
+                    self._model.set_target(a, float(val))
+                    synced = True
+            if synced:
+                self._synced_to_robot = True
+                self._refresh_inputs()
+
         self._refresh_table()
 
         # Update status indicators

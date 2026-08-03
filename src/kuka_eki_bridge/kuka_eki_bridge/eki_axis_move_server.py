@@ -136,7 +136,7 @@ class EkiAxisMoveServer:
 
                 messages = xml_buffer.feed(decoded)
 
-                for xml_msg in messages:
+                for i, xml_msg in enumerate(messages):
                     # Parse the feedback
                     parsed = parse_axis_move_xml(xml_msg)
 
@@ -154,28 +154,30 @@ class EkiAxisMoveServer:
                         except Exception as cb_err:
                             self._error(f'Feedback callback error: {cb_err}')
 
-                    # Build the command XML
-                    command_xml: Optional[str] = None
-                    if self._get_command_xml:
+                    # Only send command for the LAST message in the batch
+                    # to prevent TCP deadlock if KUKA is looping infinitely fast.
+                    if i == len(messages) - 1:
+                        command_xml: Optional[str] = None
+                        if self._get_command_xml:
+                            try:
+                                command_xml = self._get_command_xml(parsed)
+                            except Exception as cmd_err:
+                                self._error(f'Command provider error: {cmd_err}')
+
+                        if command_xml is None:
+                            continue
+
+                        if self._log_command_xml:
+                            self._info(f'[CMD TX] {command_xml}')
+
+                        # Send the response
                         try:
-                            command_xml = self._get_command_xml(parsed)
-                        except Exception as cmd_err:
-                            self._error(f'Command provider error: {cmd_err}')
-
-                    if command_xml is None:
-                        continue
-
-                    if self._log_command_xml:
-                        self._info(f'[CMD TX] {command_xml}')
-
-                    # Send the response
-                    try:
-                        client_socket.sendall(command_xml.encode('utf-8'))
-                    except (BrokenPipeError, ConnectionResetError) as send_err:
-                        self._warn(
-                            f'Send failed to {addr_str}: {send_err}'
-                        )
-                        return
+                            client_socket.sendall(command_xml.encode('utf-8'))
+                        except (BrokenPipeError, ConnectionResetError) as send_err:
+                            self._warn(
+                                f'Send failed to {addr_str}: {send_err}'
+                            )
+                            return
 
         except ConnectionResetError:
             self._info(f'Connection reset by KUKA: {addr_str}')
