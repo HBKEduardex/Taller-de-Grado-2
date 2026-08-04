@@ -45,10 +45,10 @@ from kuka_eki_bridge.axis_move_xml_utils import (
 # Joint names in order
 # ---------------------------------------------------------------------------
 _AXES = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
-
+_CARTESIAN_AXES = ['X', 'Y', 'Z', 'A', 'B', 'C']
 
 class EkiAxisMoveNode(Node):
-    """ROS2 node for the KUKA XmlAxisMove bidirectional control."""
+    """ROS2 node for the KUKA XmlDualMove bidirectional control."""
 
     def __init__(self):
         super().__init__('eki_axis_move')
@@ -95,6 +95,10 @@ class EkiAxisMoveNode(Node):
         self.declare_parameter('max_delta_deg.A5', 2.0)
         self.declare_parameter('max_delta_deg.A6', 2.0)
 
+        # Max delta for Cartesian
+        self.declare_parameter('max_delta_pos_mm', 10.0)
+        self.declare_parameter('max_delta_ori_deg', 5.0)
+
         # Seq validation
         self.declare_parameter('require_seq_positive', True)
         self.declare_parameter('reject_repeated_seq', True)
@@ -139,6 +143,9 @@ class EkiAxisMoveNode(Node):
             for a in _AXES
         }
 
+        self._max_delta_pos = self.get_parameter('max_delta_pos_mm').get_parameter_value().double_value
+        self._max_delta_ori = self.get_parameter('max_delta_ori_deg').get_parameter_value().double_value
+
         # Seq validation
         self._require_seq_positive = self.get_parameter('require_seq_positive').get_parameter_value().bool_value
         self._reject_repeated_seq = self.get_parameter('reject_repeated_seq').get_parameter_value().bool_value
@@ -147,6 +154,8 @@ class EkiAxisMoveNode(Node):
         # ── Internal state ───────────────────────────────────────────
         self._target_lock = threading.Lock()
         self._last_valid_target = dict(self._default_target)
+        self._last_valid_cartesian = {a: 0.0 for a in _CARTESIAN_AXES}
+        self._last_mode = 'AxisTarget'
         self._last_enable_move: bool = self._default_enable_move
         self._last_cmd_seq: int = 0
         self._last_sent_seq: int = -1
@@ -155,6 +164,7 @@ class EkiAxisMoveNode(Node):
         # Latest feedback from KUKA (for delta validation)
         self._feedback_lock = threading.Lock()
         self._last_feedback_actual: dict = dict(self._default_target)
+        self._last_feedback_pos: dict = {a: 0.0 for a in _CARTESIAN_AXES}
 
         # ── Banner ───────────────────────────────────────────────────
         self.get_logger().info('╔══════════════════════════════════════════════╗')
@@ -227,52 +237,73 @@ class EkiAxisMoveNode(Node):
         # Extract enable_move
         enable_move = bool(data.get('enable_move', self._default_enable_move))
 
-        # Extract seq
+        # Extract seq and mode
         cmd_seq = int(data.get('seq', 0))
+        mode = str(data.get('mode', 'AxisTarget'))
 
-        # Extract axis values
-        candidate: dict = {}
-        missing = False
+        # Support both flat layout (legacy) and nested layout (new)
+        candidate_axis: dict = {}
+        missing_axis = False
+        
+        axis_source = data.get('axis_target', data)
         for a in _AXES:
-            val = data.get(a)
+            val = axis_source.get(a)
             if val is None:
-                self.get_logger().warn(
-                    f'Target JSON missing axis "{a}" — rejecting.'
-                )
-                missing = True
+                missing_axis = True
                 break
             try:
-                candidate[a] = float(val)
+                candidate_axis[a] = float(val)
             except (TypeError, ValueError):
-                self.get_logger().warn(
-                    f'Target JSON non-numeric value for "{a}" — rejecting.'
-                )
-                missing = True
+                missing_axis = True
                 break
 
-        if missing:
+        # Cartesian parsing
+        candidate_cartesian: dict = {}
+        missing_cartesian = False
+        cart_source = data.get('cartesian_target', {})
+        for a in _CARTESIAN_AXES:
+            val = cart_source.get(a)
+            if val is None:
+                missing_cartesian = True
+                break
+            try:
+                candidate_cartesian[a] = float(val)
+            except (TypeError, ValueError):
+                missing_cartesian = True
+                break
+                
+        # Validate missing based on mode
+        if mode == 'AxisTarget' and missing_axis:
+            self.get_logger().warn(f'Target JSON missing axis values for AxisTarget mode — rejecting.')
+            return
+        elif mode == 'CartesianTarget' and missing_cartesian:
+            self.get_logger().warn(f'Target JSON missing cartesian values for CartesianTarget mode — rejecting.')
             return
 
-        # Validate soft limits
-        for a, val in candidate.items():
-            lo, hi = self._soft_limits.get(a, (-360.0, 360.0))
-            if not (lo <= val <= hi):
-                self.get_logger().warn(
-                    f'Target {a}={val:.2f} out of soft limits '
-                    f'[{lo:.1f}, {hi:.1f}] — target REJECTED.'
-                )
-                return
+        # Validate soft limits for Axis mode
+        if mode == 'AxisTarget':
+            for a, val in candidate_axis.items():
+                lo, hi = self._soft_limits.get(a, (-360.0, 360.0))
+                if not (lo <= val <= hi):
+                    self.get_logger().warn(
+                        f'Target {a}={val:.2f} out of soft limits '
+                        f'[{lo:.1f}, {hi:.1f}] — target REJECTED.'
+                    )
+                    return
 
         # Accept the target
         with self._target_lock:
-            self._last_valid_target = candidate
+            if not missing_axis:
+                self._last_valid_target = candidate_axis
+            if not missing_cartesian:
+                self._last_valid_cartesian = candidate_cartesian
+            self._last_mode = mode
             self._last_enable_move = enable_move
             self._last_cmd_seq = cmd_seq
             self._last_cmd_time = time.monotonic()
 
         self.get_logger().info(
-            f'[TARGET RECEIVED] seq={cmd_seq} enable={enable_move} ' +
-            ' '.join(f'{a}={v:.2f}' for a, v in candidate.items())
+            f'[TARGET RECEIVED] seq={cmd_seq} mode={mode} enable={enable_move}'
         )
 
     # ── Feedback callback (called from TCP thread) ───────────────────
@@ -297,6 +328,7 @@ class EkiAxisMoveNode(Node):
         # Store latest feedback for delta validation
         with self._feedback_lock:
             self._last_feedback_actual = dict(axis_actual) if axis_actual else dict(self._default_target)
+            self._last_feedback_pos = dict(pos_actual) if pos_actual else {a: 0.0 for a in _CARTESIAN_AXES}
 
         # ── Publish raw robot XML ────────────────────────────────────
         raw_msg = String()
@@ -332,6 +364,8 @@ class EkiAxisMoveNode(Node):
         """
         with self._target_lock:
             target_snap = dict(self._last_valid_target)
+            cart_snap = dict(self._last_valid_cartesian)
+            mode_snap = self._last_mode
             enable_move_snap = self._last_enable_move
             cmd_seq = self._last_cmd_seq
             cmd_time = self._last_cmd_time
@@ -339,6 +373,7 @@ class EkiAxisMoveNode(Node):
         # Get current feedback for delta validation
         with self._feedback_lock:
             feedback_actual = dict(self._last_feedback_actual)
+            feedback_pos = dict(self._last_feedback_pos)
 
         # ── Validation layers ────────────────────────────────────────
         effective_enable = enable_move_snap
@@ -369,20 +404,20 @@ class EkiAxisMoveNode(Node):
             age = time.monotonic() - cmd_time
             if cmd_time == 0.0 or age > self._command_timeout:
                 effective_enable = False
-                reasons.append(f'cmd_stale({age:.1f}s)')
+                reasons.append(f'timeout({age:.1f}s)')
 
-        # Layer 6: soft limits (re-check)
+        # Layer 6: Robot readiness
         if effective_enable:
-            for a in _AXES:
-                val = target_snap.get(a, 0.0)
-                lo, hi = self._soft_limits.get(a, (-360.0, 360.0))
-                if not (lo <= val <= hi):
-                    effective_enable = False
-                    reasons.append(f'{a}={val:.1f} out_of_limits')
-                    break
+            # We don't necessarily abort EnableMove if MoveReady=0 here,
+            # as KUKA uses EnableMove=1 to *trigger* MoveReady.
+            # However, if limits or delta are natively violated, block it.
+            fb_limits = parsed_feedback.get('limits_ok', True)
+            if not fb_limits:
+                effective_enable = False
+                reasons.append('robot_limits_violation')
 
-        # Layer 7: max delta
-        if effective_enable:
+        # Layer 7: max delta (Axis)
+        if effective_enable and mode_snap == 'AxisTarget':
             for a in _AXES:
                 target_val = target_snap.get(a, 0.0)
                 actual_val = feedback_actual.get(a, target_val)
@@ -391,6 +426,25 @@ class EkiAxisMoveNode(Node):
                 if delta > max_d:
                     effective_enable = False
                     reasons.append(f'{a} delta={delta:.2f}>{max_d:.1f}')
+                    break
+
+        # Layer 8: max delta (Cartesian)
+        if effective_enable and mode_snap == 'CartesianTarget':
+            for a in ['X', 'Y', 'Z']:
+                t_val = cart_snap.get(a, 0.0)
+                a_val = feedback_pos.get(a, t_val)
+                delta = abs(t_val - a_val)
+                if delta > self._max_delta_pos:
+                    effective_enable = False
+                    reasons.append(f'{a} delta={delta:.2f}>{self._max_delta_pos:.1f}')
+                    break
+            for a in ['A', 'B', 'C']:
+                t_val = cart_snap.get(a, 0.0)
+                a_val = feedback_pos.get(a, t_val)
+                delta = abs(t_val - a_val)
+                if delta > self._max_delta_ori:
+                    effective_enable = False
+                    reasons.append(f'{a} delta={delta:.2f}>{self._max_delta_ori:.1f}')
                     break
 
         # Track sent seq
@@ -410,6 +464,8 @@ class EkiAxisMoveNode(Node):
             enable_move=effective_enable,
             safe_mode=False,  # Already handled above
             allow_motion=True,  # Already handled above
+            cartesian_target=cart_snap,
+            mode=mode_snap,
         )
 
         # Publish the sent command XML

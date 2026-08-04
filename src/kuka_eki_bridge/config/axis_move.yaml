@@ -54,6 +54,9 @@ eki_axis_move:
       A5: 10.0
       A6: 10.0
 
+    max_delta_pos_mm: 100.0
+    max_delta_ori_deg: 20.0
+
     # ── Seq validation ─────────────────────────────────────────────────
     require_seq_positive: true
     reject_repeated_seq: true

@@ -24,13 +24,14 @@ try:
         QHBoxLayout, QLabel, QLineEdit, QMainWindow,
         QMessageBox, QPushButton, QSizePolicy, QScrollArea,
         QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
+        QTabWidget, QRadioButton, QButtonGroup,
     )
 except ImportError as e:
     raise ImportError(
         'PyQt5 is required. Install with:  sudo apt install python3-pyqt5'
     ) from e
 
-from kuka_gui_control.joint_command_model import JointCommandModel, AXES
+from kuka_gui_control.joint_command_model import JointCommandModel, AXES, CARTESIAN_AXES
 
 # ---------------------------------------------------------------------------
 # Style constants
@@ -353,6 +354,25 @@ class AxisMoveGuiWindow(QMainWindow):
         )
         main_layout.addWidget(banner)
 
+
+        # Mode Selector removed in favor of QTabWidget tabs
+
+        # ── Tabs ─────────────────────────────────────────────────────
+        self._tabs = QTabWidget()
+        
+        self._tab_axis = QWidget()
+        layout_axis = QVBoxLayout(self._tab_axis)
+        
+        self._tab_cart = QWidget()
+        layout_cart = QVBoxLayout(self._tab_cart)
+        
+        self._tabs.addTab(self._tab_axis, 'Control por Ejes')
+        self._tabs.addTab(self._tab_cart, 'Control Cartesiano')
+        
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        
+        main_layout.addWidget(self._tabs)
+
         # ── Joint table ──────────────────────────────────────────────
         table_group = QGroupBox('Posiciones Articulares')
         table_layout = QGridLayout(table_group)
@@ -391,7 +411,7 @@ class AxisMoveGuiWindow(QMainWindow):
             table_layout.addWidget(lbl_err, row, 3)
             self._table_labels[axis]['error'] = lbl_err
 
-        main_layout.addWidget(table_group)
+        layout_axis.addWidget(table_group)
 
         # ── Joint controls ───────────────────────────────────────────
         controls_group = QGroupBox('Control de Articulaciones')
@@ -432,7 +452,82 @@ class AxisMoveGuiWindow(QMainWindow):
             lbl_deg.setStyleSheet(f'color: {TEXT_SEC};')
             controls_layout.addWidget(lbl_deg, row, 4)
 
-        main_layout.addWidget(controls_group)
+        layout_axis.addWidget(controls_group)
+
+        # ── Cartesian table ──────────────────────────────────────────────
+        cart_table_group = QGroupBox('Posiciones Cartesianas')
+        cart_table_layout = QGridLayout(cart_table_group)
+        cart_table_layout.setSpacing(4)
+
+        for col, hdr in enumerate(['Cartesiano', 'Target', 'Feedback', 'Error']):
+            lbl = QLabel(hdr)
+            lbl.setStyleSheet(f'font-weight: bold; color: {ACCENT}; font-size: 12px;')
+            lbl.setAlignment(Qt.AlignCenter)
+            cart_table_layout.addWidget(lbl, 0, col)
+
+        for row, axis in enumerate(CARTESIAN_AXES, start=1):
+            self._table_labels[axis] = {}
+            lbl_name = QLabel(axis)
+            lbl_name.setAlignment(Qt.AlignCenter)
+            lbl_name.setStyleSheet('font-weight: bold;')
+            cart_table_layout.addWidget(lbl_name, row, 0)
+
+            lbl_target = QLabel('0.00')
+            lbl_target.setAlignment(Qt.AlignCenter)
+            cart_table_layout.addWidget(lbl_target, row, 1)
+            self._table_labels[axis]['target'] = lbl_target
+
+            lbl_fb = QLabel('N/A')
+            lbl_fb.setAlignment(Qt.AlignCenter)
+            lbl_fb.setStyleSheet(f'color: {TEXT_SEC};')
+            cart_table_layout.addWidget(lbl_fb, row, 2)
+            self._table_labels[axis]['feedback'] = lbl_fb
+
+            lbl_err = QLabel('N/A')
+            lbl_err.setAlignment(Qt.AlignCenter)
+            lbl_err.setStyleSheet(f'color: {TEXT_SEC};')
+            cart_table_layout.addWidget(lbl_err, row, 3)
+            self._table_labels[axis]['error'] = lbl_err
+
+        layout_cart.addWidget(cart_table_group)
+
+        # ── Cartesian controls ───────────────────────────────────────────
+        cart_controls_group = QGroupBox('Control Cartesiano')
+        cart_controls_layout = QGridLayout(cart_controls_group)
+        cart_controls_layout.setSpacing(4)
+
+        for row, axis in enumerate(CARTESIAN_AXES):
+            lbl = QLabel(axis)
+            lbl.setStyleSheet('font-weight: bold; min-width: 30px;')
+            cart_controls_layout.addWidget(lbl, row, 0)
+
+            btn_minus = QPushButton('−')
+            btn_minus.setStyleSheet(BTN_PM)
+            btn_minus.setCursor(Qt.PointingHandCursor)
+            btn_minus.clicked.connect(lambda checked, a=axis: self._on_step(a, -1))
+            cart_controls_layout.addWidget(btn_minus, row, 1)
+            self._joint_minus[axis] = btn_minus
+
+            inp = QLineEdit(f'{self._model.get_target(axis):.2f}')
+            inp.setAlignment(Qt.AlignCenter)
+            inp.setFixedWidth(100)
+            inp.editingFinished.connect(lambda a=axis: self._on_input_changed(a))
+            cart_controls_layout.addWidget(inp, row, 2)
+            self._joint_inputs[axis] = inp
+
+            btn_plus = QPushButton('+')
+            btn_plus.setStyleSheet(BTN_PM)
+            btn_plus.setCursor(Qt.PointingHandCursor)
+            btn_plus.clicked.connect(lambda checked, a=axis: self._on_step(a, +1))
+            cart_controls_layout.addWidget(btn_plus, row, 3)
+            self._joint_plus[axis] = btn_plus
+
+            lbl_deg = QLabel('mm' if axis in ['X', 'Y', 'Z'] else 'deg')
+            lbl_deg.setStyleSheet(f'color: {TEXT_SEC};')
+            cart_controls_layout.addWidget(lbl_deg, row, 4)
+
+        layout_cart.addWidget(cart_controls_group)
+
 
         # ── Action buttons ───────────────────────────────────────────
         btn_layout = QHBoxLayout()
@@ -536,9 +631,17 @@ class AxisMoveGuiWindow(QMainWindow):
         lbl_val.setStyleSheet(f'color: {color}; font-weight: bold;')
         return (lbl_name, lbl_val)
 
+
+    def _on_tab_changed(self, index: int):
+        if index == 0:
+            self._model.set_target_mode('AxisTarget')
+        else:
+            self._model.set_target_mode('CartesianTarget')
+        self._refresh_inputs()
+        
     def _refresh_table(self):
         """Refresh all table labels from the model."""
-        for axis in AXES:
+        for axis in AXES + CARTESIAN_AXES:
             target = self._model.get_target(axis)
             feedback = self._model.get_feedback(axis)
             error = self._model.get_error(axis)
@@ -563,7 +666,7 @@ class AxisMoveGuiWindow(QMainWindow):
     def _refresh_inputs(self):
         """Refresh all input fields from the model and check limits."""
         all_ok = True
-        for axis in AXES:
+        for axis in AXES + CARTESIAN_AXES:
             val = self._model.get_target(axis)
             inp = self._joint_inputs[axis]
             inp.setText(f'{val:.2f}')
@@ -633,7 +736,7 @@ class AxisMoveGuiWindow(QMainWindow):
                 return
             self._first_send_confirmed = True
 
-        self._model.set_mode('manual_send')
+        self._model.set_node_mode('manual_send')
         self._validate_and_send()
         self._refresh_table()
 
@@ -658,7 +761,7 @@ class AxisMoveGuiWindow(QMainWindow):
         if self._auto_running:
             return
 
-        self._model.set_mode('auto')
+        self._model.set_node_mode('auto')
         interval_ms = max(50, int(1000.0 / self._auto_hz))
 
         self._auto_timer = QTimer(self)
@@ -675,7 +778,7 @@ class AxisMoveGuiWindow(QMainWindow):
             self._auto_timer.stop()
             self._auto_timer = None
         self._auto_running = False
-        self._model.set_mode('manual_send')
+        self._model.set_node_mode('manual_send')
 
         self._btn_auto.setEnabled(True)
         self._btn_stop_auto.setEnabled(False)
@@ -788,9 +891,15 @@ class AxisMoveGuiWindow(QMainWindow):
         # On first feedback, sync targets to robot's actual position
         if not self._synced_to_robot:
             axis_actual = fb.get('axis_actual', {})
+            pos_actual = fb.get('position_actual', {})
             synced = False
             for a in AXES:
                 val = axis_actual.get(a)
+                if val is not None:
+                    self._model.set_target(a, float(val))
+                    synced = True
+            for a in CARTESIAN_AXES:
+                val = pos_actual.get(a)
                 if val is not None:
                     self._model.set_target(a, float(val))
                     synced = True

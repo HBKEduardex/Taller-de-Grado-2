@@ -220,6 +220,8 @@ def build_axis_move_command_xml(
     enable_move: bool,
     safe_mode: bool,
     allow_motion: bool,
+    cartesian_target: Optional[Dict[str, float]] = None,
+    mode: str = 'AxisTarget',
 ) -> str:
     """
     Build the <Command> XML string to send back to the KUKA.
@@ -231,6 +233,8 @@ def build_axis_move_command_xml(
           <EnableMove>0</EnableMove>
           <AxisTarget A1="0.0" A2="-90.0" A3="90.0"
                       A4="0.0"  A5="0.0"  A6="0.0"/>
+          <CartesianTarget X="0.0" Y="0.0" Z="0.0"
+                           A="0.0" B="0.0" C="0.0"/>
         </Command>
 
     Args:
@@ -239,6 +243,8 @@ def build_axis_move_command_xml(
         enable_move:  Requested enable-move flag from the GUI.
         safe_mode:    If True, EnableMove is always forced to 0.
         allow_motion: If False, EnableMove is always forced to 0.
+        cartesian_target: Optional dict with X, Y, Z, A, B, C values.
+        mode:         'AxisTarget' or 'CartesianTarget'.
 
     Returns:
         XML string ready to be sent over TCP.
@@ -255,11 +261,21 @@ def build_axis_move_command_xml(
     a4 = target.get('A4', 0.0)
     a5 = target.get('A5', 0.0)
     a6 = target.get('A6', 0.0)
+    
+    if cartesian_target is None:
+        cartesian_target = {}
+        
+    x = cartesian_target.get('X', 0.0)
+    y = cartesian_target.get('Y', 0.0)
+    z = cartesian_target.get('Z', 0.0)
+    ca = cartesian_target.get('A', 0.0)
+    cb = cartesian_target.get('B', 0.0)
+    cc = cartesian_target.get('C', 0.0)
 
     xml = (
         f'<Command>'
         f'<Seq>{seq}</Seq>'
-        f'<Mode>AxisTarget</Mode>'
+        f'<Mode>{mode}</Mode>'
         f'<EnableMove>{effective_enable}</EnableMove>'
         f'<AxisTarget'
         f' A1="{a1:.4f}"'
@@ -268,6 +284,14 @@ def build_axis_move_command_xml(
         f' A4="{a4:.4f}"'
         f' A5="{a5:.4f}"'
         f' A6="{a6:.4f}"'
+        f'/>'
+        f'<CartesianTarget'
+        f' X="{x:.4f}"'
+        f' Y="{y:.4f}"'
+        f' Z="{z:.4f}"'
+        f' A="{ca:.4f}"'
+        f' B="{cb:.4f}"'
+        f' C="{cc:.4f}"'
         f'/>'
         f'</Command>'
     )

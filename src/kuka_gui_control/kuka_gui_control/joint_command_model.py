@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Tuple
 
 AXES: List[str] = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
+CARTESIAN_AXES: List[str] = ['X', 'Y', 'Z', 'A', 'B', 'C']
+
 DEFAULT_HOME: Dict[str, float] = {
     'A1': 0.0,
     'A2': -90.0,
@@ -26,6 +28,15 @@ DEFAULT_HOME: Dict[str, float] = {
     'A4': 0.0,
     'A5': 0.0,
     'A6': 0.0,
+}
+
+DEFAULT_CARTESIAN_HOME: Dict[str, float] = {
+    'X': 400.0,
+    'Y': 0.0,
+    'Z': 600.0,
+    'A': 0.0,
+    'B': 90.0,
+    'C': 0.0,
 }
 
 DEFAULT_LIMITS: Dict[str, Tuple[float, float]] = {
@@ -36,7 +47,6 @@ DEFAULT_LIMITS: Dict[str, Tuple[float, float]] = {
     'A5': (-110.0, 110.0),
     'A6': (-340.0, 340.0),
 }
-
 
 # ---------------------------------------------------------------------------
 # Model
@@ -63,11 +73,14 @@ class JointCommandModel:
         step_deg: float = 1.0,
     ):
         self._home: Dict[str, float] = home or dict(DEFAULT_HOME)
+        self._cartesian_home: Dict[str, float] = dict(DEFAULT_CARTESIAN_HOME)
         self._limits: Dict[str, Tuple[float, float]] = limits or dict(DEFAULT_LIMITS)
         self._step_deg: float = step_deg
+        self._step_mm: float = 1.0
 
         # Current target values (what will be sent)
         self._target: Dict[str, float] = dict(self._home)
+        self._target_cartesian: Dict[str, float] = dict(self._cartesian_home)
 
         # Latest feedback from KUKA
         self._feedback: Dict[str, Optional[float]] = {a: None for a in AXES}
@@ -75,7 +88,7 @@ class JointCommandModel:
 
         # Position actual (Cartesian)
         self._position_actual: Dict[str, Optional[float]] = {
-            k: None for k in ['X', 'Y', 'Z', 'A', 'B', 'C']
+            k: None for k in CARTESIAN_AXES
         }
 
         # Sequence counter for published messages
@@ -84,8 +97,11 @@ class JointCommandModel:
         # Enable move flag
         self._enable_move: bool = enable_move_default
 
-        # Mode: 'manual_send' or 'auto'
-        self._mode: str = 'manual_send'
+        # Mode for node: 'manual_send' or 'auto'
+        self._node_mode: str = 'manual_send'
+        
+        # Target Mode for KUKA: 'AxisTarget' or 'CartesianTarget'
+        self._target_mode: str = 'AxisTarget'
 
     # ── Targets ─────────────────────────────────────────────────────
 
@@ -93,10 +109,14 @@ class JointCommandModel:
         """Set a single axis target (no limit check here — use is_in_limits)."""
         if axis in AXES:
             self._target[axis] = value
+        elif axis in CARTESIAN_AXES:
+            self._target_cartesian[axis] = value
 
     def get_target(self, axis: str) -> float:
-        """Return target value for an axis."""
-        return self._target.get(axis, 0.0)
+        """Return target value for an axis or cartesian coordinate."""
+        if axis in AXES:
+            return self._target.get(axis, 0.0)
+        return self._target_cartesian.get(axis, 0.0)
 
     def get_all_targets(self) -> Dict[str, float]:
         """Return a copy of all target values."""
@@ -108,41 +128,53 @@ class JointCommandModel:
 
     def step_target(self, axis: str, direction: int) -> float:
         """
-        Increment or decrement a target by step_deg.
+        Increment or decrement a target by step.
 
         Args:
-            axis:      Axis name (A1-A6).
+            axis:      Axis name (A1-A6 or X-C).
             direction: +1 to increment, -1 to decrement.
 
         Returns:
             New value after stepping (may be out of limits — caller must check).
         """
-        current = self._target.get(axis, 0.0)
-        new_val = current + direction * self._step_deg
-        self._target[axis] = new_val
-        return new_val
+        if axis in AXES:
+            current = self._target.get(axis, 0.0)
+            new_val = current + direction * self._step_deg
+            self._target[axis] = new_val
+            return new_val
+        elif axis in CARTESIAN_AXES:
+            current = self._target_cartesian.get(axis, 0.0)
+            step = self._step_mm if axis in ['X', 'Y', 'Z'] else self._step_deg
+            new_val = current + direction * step
+            self._target_cartesian[axis] = new_val
+            return new_val
+        return 0.0
 
     # ── Limits ──────────────────────────────────────────────────────
 
     def is_in_limits(self, axis: str, value: Optional[float] = None) -> bool:
         """
         Check if a value (or current target if None) is within soft limits.
-
-        Args:
-            axis:  Axis name.
-            value: Value to check. Defaults to current target for that axis.
-
-        Returns:
-            True if within limits.
         """
+        if axis in CARTESIAN_AXES:
+            return True # Cartesian limits not enforced in GUI
+            
         if value is None:
             value = self._target.get(axis, 0.0)
+            
         lo, hi = self._limits.get(axis, (-360.0, 360.0))
         return lo <= value <= hi
 
     def all_targets_in_limits(self) -> bool:
         """Return True if all current targets are within soft limits."""
         return all(self.is_in_limits(a) for a in AXES)
+
+    def clamp(self, axis: str, value: float) -> float:
+        """Return value clamped to soft limits."""
+        if axis in CARTESIAN_AXES:
+            return value
+        lo, hi = self._limits.get(axis, (-360.0, 360.0))
+        return max(lo, min(value, hi))
 
     def get_limits(self, axis: str) -> Tuple[float, float]:
         """Return (min, max) soft limits for an axis."""
@@ -170,7 +202,7 @@ class JointCommandModel:
                     pass
 
         pos_actual = data.get('position_actual', {})
-        for k in ['X', 'Y', 'Z', 'A', 'B', 'C']:
+        for k in CARTESIAN_AXES:
             val = pos_actual.get(k)
             if val is not None:
                 try:
@@ -182,16 +214,24 @@ class JointCommandModel:
 
     def get_feedback(self, axis: str) -> Optional[float]:
         """Return last feedback value for an axis, or None if not received."""
-        return self._feedback.get(axis)
+        if axis in AXES:
+            return self._feedback.get(axis)
+        return self._position_actual.get(axis)
 
     def get_error(self, axis: str) -> Optional[float]:
         """
         Return target - feedback for an axis, or None if no feedback.
         """
-        fb = self._feedback.get(axis)
+        if axis in AXES:
+            fb = self._feedback.get(axis)
+            target = self._target.get(axis, 0.0)
+        else:
+            fb = self._position_actual.get(axis)
+            target = self._target_cartesian.get(axis, 0.0)
+
         if fb is None:
             return None
-        return self._target.get(axis, 0.0) - fb
+        return target - fb
 
     def has_recent_feedback(self, timeout_sec: float = 2.0) -> bool:
         """Return True if feedback was received within timeout_sec seconds."""
@@ -206,12 +246,19 @@ class JointCommandModel:
 
     # ── Mode & enable_move ───────────────────────────────────────────
 
-    def set_mode(self, mode: str) -> None:
-        """Set the current mode string: 'manual_send' or 'auto'."""
-        self._mode = mode
+    def set_target_mode(self, mode: str) -> None:
+        """Set 'AxisTarget' or 'CartesianTarget'."""
+        self._target_mode = mode
 
-    def get_mode(self) -> str:
-        return self._mode
+    def get_target_mode(self) -> str:
+        return self._target_mode
+
+    def set_node_mode(self, mode: str) -> None:
+        """Set the current node mode string: 'manual_send' or 'auto'."""
+        self._node_mode = mode
+
+    def get_node_mode(self) -> str:
+        return self._node_mode
 
     def set_enable_move(self, value: bool) -> None:
         self._enable_move = value
@@ -242,11 +289,18 @@ class JointCommandModel:
         payload = {
             'seq': seq,
             'source': 'kuka_gui_control',
-            'mode': self._mode,
+            'node_mode': self._node_mode,
+            'mode': self._target_mode,
             'enable_move': self._enable_move,
+            'axis_target': {},
+            'cartesian_target': {}
         }
         for a in AXES:
-            payload[a] = round(self._target.get(a, 0.0), 6)
+            payload['axis_target'][a] = round(self._target.get(a, 0.0), 6)
+            payload[a] = payload['axis_target'][a] # Legacy flat support
+            
+        for a in CARTESIAN_AXES:
+            payload['cartesian_target'][a] = round(self._target_cartesian.get(a, 0.0), 6)
 
         return json.dumps(payload)
 
@@ -265,3 +319,11 @@ class JointCommandModel:
     @step_deg.setter
     def step_deg(self, value: float) -> None:
         self._step_deg = value
+
+    @property
+    def step_mm(self) -> float:
+        return self._step_mm
+
+    @step_mm.setter
+    def step_mm(self, value: float) -> None:
+        self._step_mm = value
