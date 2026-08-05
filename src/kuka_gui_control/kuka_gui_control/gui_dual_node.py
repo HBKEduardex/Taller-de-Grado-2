@@ -66,9 +66,10 @@ DEFAULT_CONFIG = {
     'allow_auto_mode':        True,
     'allow_auto_motion':      False,
 
-    'publish_to_kuka_default':  True,
-    'publish_to_rviz_default':  True,
-    'cartesian_to_rviz':        True,
+    'publish_joints_to_kuka':  True,
+    'publish_joints_to_rviz':  True,
+    'publish_cartesian_to_kuka': True,
+    'publish_cartesian_to_rviz': True,
 
     # ── Home / limits ────────────────────────────────────────────────
     'home_joints_deg':        dict(DEFAULT_HOME),
@@ -128,9 +129,10 @@ def main(args=None):
         limits=limits,
         enable_move_default=cfg.get('enable_move_default', False),
         step_deg=cfg.get('step_deg', 1.0),
-        publish_to_kuka=cfg.get('publish_to_kuka_default', True),
-        publish_to_rviz=cfg.get('publish_to_rviz_default', True),
-        cartesian_to_rviz=cfg.get('cartesian_to_rviz', True),
+        publish_joints_to_kuka=cfg.get('publish_joints_to_kuka', True),
+        publish_joints_to_rviz=cfg.get('publish_joints_to_rviz', True),
+        publish_cartesian_to_kuka=cfg.get('publish_cartesian_to_kuka', False),
+        publish_cartesian_to_rviz=cfg.get('publish_cartesian_to_rviz', True),
     )
 
     # ── Main window (created BEFORE bridge.start) ────────────────────

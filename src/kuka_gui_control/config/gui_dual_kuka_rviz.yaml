@@ -27,11 +27,11 @@ kuka_gui_dual_node:
     allow_auto_mode: true
     allow_auto_motion: false
 
-    publish_to_rviz_default: true
-    publish_to_kuka_default: true
+    publish_joints_to_kuka: true
+    publish_joints_to_rviz: true
 
-    cartesian_to_kuka_enabled: false
-    cartesian_to_rviz_enabled: true
+    publish_cartesian_to_kuka: true
+    publish_cartesian_to_rviz: true
 
     # ── Home position ─────────────────────────────────────────────────
     home_joints_deg:

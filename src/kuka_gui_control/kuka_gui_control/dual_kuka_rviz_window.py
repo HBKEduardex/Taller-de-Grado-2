@@ -1,21 +1,20 @@
 """
-dual_kuka_rviz_window.py — PyQt5 main window for Dual KUKA + RViz mode.
+gui_axis_move_window.py — PyQt5 main window for KUKA XmlAxisMove joint control.
 
-Three-screen flow:
-  Screen 0 (Welcome):   Title + START KUKA + MODO DUAL buttons.
-  Screen 1 (Dual):      Unified A1-A6 controls, dual feedback table,
-                         cartesian section for RViz.
+Two-screen flow:
+  Screen 1 (Welcome):  Title + description + START button.
+  Screen 2 (Control):  Status panel, joint table, joint controls, action buttons,
+                        JSON/XML viewers.
 
-All ROS2 communication is delegated to:
-  - RosAxisMoveBridge   (KUKA TCP/IP — existing, unmodified)
-  - RosMoveitMirrorBridge (RViz/MoveIt2 — new)
+All ROS2 communication is delegated to RosAxisMoveBridge via Qt signals.
+This file has no direct rclpy dependency.
 
-This module does NOT modify gui_axis_move_window.py.
+This module does NOT modify gui_window.py.
 """
 
 import json
 import time
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 try:
     from PyQt5.QtCore import Qt, QTimer, pyqtSlot
@@ -25,33 +24,32 @@ try:
         QHBoxLayout, QLabel, QLineEdit, QMainWindow,
         QMessageBox, QPushButton, QSizePolicy, QScrollArea,
         QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
+        QTabWidget, QRadioButton, QButtonGroup,
     )
 except ImportError as e:
     raise ImportError(
         'PyQt5 is required. Install with:  sudo apt install python3-pyqt5'
     ) from e
 
-from kuka_gui_control.dual_command_model import (
-    DualCommandModel, AXES, CART_KEYS,
-)
+from kuka_gui_control.dual_command_model import DualCommandModel
+from kuka_gui_control.joint_command_model import AXES, CARTESIAN_AXES
+from std_msgs.msg import Float64MultiArray
 
 # ---------------------------------------------------------------------------
-# Style constants (same palette as gui_axis_move_window.py)
+# Style constants
 # ---------------------------------------------------------------------------
 
-DARK_BG = '#0d1117'
-PANEL_BG = '#161b22'
-BORDER_CLR = '#30363d'
-ACCENT = '#58a6ff'
-ACCENT2 = '#3fb950'
-ACCENT3 = '#d2a8ff'       # Purple for RViz
+DARK_BG = '#1a1025'        # Lila oscuro para fondo
+PANEL_BG = '#26173a'       # Lila panel
+BORDER_CLR = '#4b2a6f'     # Borde lila
+ACCENT = '#9b59b6'         # Lila primario
+ACCENT2 = '#8e44ad'        # Lila secundario
 WARN_CLR = '#f78166'
 ERROR_CLR = '#da3633'
-TEXT_PRI = '#e6edf3'
-TEXT_SEC = '#8b949e'
+TEXT_PRI = '#f0e6fa'       # Texto lila claro
+TEXT_SEC = '#b59dc7'       # Texto lila grisaceo
 AUTO_ON_CLR = '#388bfd'
 STOP_CLR = '#da3633'
-RVIZ_CLR = '#d2a8ff'
 
 FONT_FAMILY = 'Inter, Segoe UI, DejaVu Sans, sans-serif'
 
@@ -64,127 +62,145 @@ QMainWindow, QWidget {{
 }}
 QGroupBox {{
     border: 1px solid {BORDER_CLR};
-    border-radius: 6px;
+    border-radius: 8px;
     margin-top: 10px;
-    padding-top: 14px;
+    padding: 8px;
     font-weight: bold;
+    color: {ACCENT};
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 12px;
+    left: 10px;
     padding: 0 4px;
+}}
+QLabel {{
+    color: {TEXT_PRI};
 }}
 QLineEdit {{
     background-color: {PANEL_BG};
     border: 1px solid {BORDER_CLR};
     border-radius: 4px;
-    padding: 4px 6px;
     color: {TEXT_PRI};
+    padding: 3px 6px;
+    selection-background-color: {ACCENT};
 }}
 QLineEdit:focus {{
-    border-color: {ACCENT};
-}}
-QPushButton {{
-    background-color: {PANEL_BG};
-    border: 1px solid {BORDER_CLR};
-    border-radius: 4px;
-    padding: 6px 14px;
-    color: {TEXT_PRI};
-}}
-QPushButton:hover {{
-    background-color: #21262d;
-    border-color: {ACCENT};
+    border: 1px solid {ACCENT};
 }}
 QTextEdit {{
     background-color: {PANEL_BG};
     border: 1px solid {BORDER_CLR};
     border-radius: 4px;
     color: {TEXT_SEC};
-    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-family: monospace;
     font-size: 11px;
+}}
+QPushButton {{
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-weight: bold;
+    font-size: 13px;
+}}
+QPushButton:disabled {{
+    opacity: 0.4;
+    color: {TEXT_SEC};
 }}
 QCheckBox {{
     color: {TEXT_PRI};
     spacing: 6px;
 }}
 QCheckBox::indicator {{
-    width: 16px; height: 16px;
-    border: 1px solid {BORDER_CLR};
-    border-radius: 3px;
-    background-color: {PANEL_BG};
-}}
-QCheckBox::indicator:checked {{
-    background-color: {ACCENT2};
-    border-color: {ACCENT2};
-}}
-"""
-
-BTN_START = f"""
-QPushButton {{
-    background-color: {ACCENT};
-    color: #ffffff;
-    font-size: 16px;
-    font-weight: bold;
-    padding: 12px 40px;
-    border-radius: 8px;
-    border: none;
-}}
-QPushButton:hover {{
-    background-color: #79c0ff;
-}}
-"""
-
-BTN_DUAL = f"""
-QPushButton {{
-    background-color: {ACCENT3};
-    color: #0d1117;
-    font-size: 16px;
-    font-weight: bold;
-    padding: 12px 40px;
-    border-radius: 8px;
-    border: none;
-}}
-QPushButton:hover {{
-    background-color: #e2bfff;
+    width: 18px;
+    height: 18px;
 }}
 """
 
 BTN_SEND = f"""
 QPushButton {{
     background-color: {ACCENT2};
-    color: #0d1117;
-    font-weight: bold;
-    padding: 8px 24px;
-    border-radius: 6px;
+    color: #fff;
     border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-weight: bold;
 }}
-QPushButton:hover {{ background-color: #56d364; }}
+QPushButton:hover {{ background-color: #2ea043; }}
+QPushButton:disabled {{ background-color: {BORDER_CLR}; color: {TEXT_SEC}; }}
+"""
+
+BTN_HOME = f"""
+QPushButton {{
+    background-color: {ACCENT};
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-weight: bold;
+}}
+QPushButton:hover {{ background-color: #4090e0; }}
+"""
+
+BTN_AUTO = f"""
+QPushButton {{
+    background-color: {AUTO_ON_CLR};
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-weight: bold;
+}}
+QPushButton:hover {{ background-color: #2d7cf0; }}
 """
 
 BTN_STOP = f"""
 QPushButton {{
     background-color: {STOP_CLR};
-    color: #ffffff;
-    font-weight: bold;
-    padding: 8px 24px;
-    border-radius: 6px;
+    color: #fff;
     border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-weight: bold;
 }}
-QPushButton:hover {{ background-color: #f85149; }}
+QPushButton:hover {{ background-color: #b62324; }}
 """
 
-BTN_BACK = f"""
+BTN_RESET = f"""
+QPushButton {{
+    background-color: {BORDER_CLR};
+    color: {TEXT_PRI};
+    border: 1px solid {TEXT_SEC};
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-weight: bold;
+}}
+QPushButton:hover {{ background-color: #3d444d; }}
+"""
+
+BTN_START = f"""
+QPushButton {{
+    background-color: {ACCENT2};
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 48px;
+    font-size: 18px;
+    font-weight: bold;
+}}
+QPushButton:hover {{ background-color: #2ea043; }}
+"""
+
+BTN_PM = f"""
 QPushButton {{
     background-color: {PANEL_BG};
-    border: 1px solid {BORDER_CLR};
-    border-radius: 6px;
-    padding: 6px 16px;
-    color: {TEXT_SEC};
-}}
-QPushButton:hover {{
-    border-color: {ACCENT};
     color: {TEXT_PRI};
+    border: 1px solid {BORDER_CLR};
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-weight: bold;
+    font-size: 14px;
+    min-width: 28px;
 }}
+QPushButton:hover {{ border-color: {ACCENT}; }}
 """
 
 
@@ -194,17 +210,18 @@ QPushButton:hover {{
 
 class DualKukaRvizWindow(QMainWindow):
     """
-    Main window for Dual KUKA + RViz mode.
+    PyQt5 main window for the KUKA XmlAxisMove joint control system.
 
-    Screen 0: Welcome (START / MODO DUAL)
-    Screen 1: Dual control (unified joints + cartesian RViz)
+    Two screens:
+      - Welcome (START button)
+      - Control (status, table, controls, buttons, logs)
     """
 
     def __init__(
         self,
         model: DualCommandModel,
-        kuka_bridge,          # RosAxisMoveBridge
-        rviz_bridge,          # RosMoveitMirrorBridge
+        kuka_bridge,
+        rviz_bridge,
         config: dict,
         parent=None,
     ):
@@ -220,6 +237,7 @@ class DualKukaRvizWindow(QMainWindow):
         self._send_hold_timer: Optional[QTimer] = None
         self._send_hold_count = 0
         self._first_send_confirmed = False
+        self._enable_move_confirmed = False
         self._synced_to_robot = False
 
         # Config values
@@ -230,30 +248,53 @@ class DualKukaRvizWindow(QMainWindow):
         self._require_confirm = config.get('require_confirmation_for_first_send', True)
         self._show_raw_json = config.get('show_raw_json', True)
         self._show_raw_xml = config.get('show_raw_xml', True)
+        self._max_delta = config.get('max_delta_deg', {})
 
-        self.setWindowTitle('KUKA Dual Control — KUKA Real + RViz/MoveIt2')
-        self.setMinimumSize(1050, 780)
+        self.setWindowTitle('Dual KUKA + RViz Control GUI')
+        self.setMinimumSize(900, 700)
         self.setStyleSheet(BASE_STYLE)
 
         # ── Build UI ─────────────────────────────────────────────────
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
-        self._build_welcome_screen()      # index 0
-        self._build_dual_control_screen()  # index 1
+        self._build_welcome_screen()
+        self._build_control_screen()
 
         self._stack.setCurrentIndex(0)
 
-        # ── Connect KUKA bridge signals ──────────────────────────────
-        self._kuka_bridge.feedback_received.connect(self._on_kuka_feedback)
-        self._kuka_bridge.raw_command_xml_received.connect(self._on_raw_cmd_xml)
+        # ── Connect KUKA bridge signals ────────────────────────────────
+        self._kuka_bridge.feedback_received.connect(self._on_feedback)
+        self._kuka_bridge.raw_command_xml_received.connect(self._on_raw_command_xml)
         self._kuka_bridge.raw_robot_xml_received.connect(self._on_raw_robot_xml)
         self._kuka_bridge.ros_status_changed.connect(self._on_ros_status)
 
-        # ── Connect RViz bridge signals ──────────────────────────────
-        self._rviz_bridge.rviz_status_received.connect(self._on_rviz_status)
+        # ── Connect RViz bridge signals ────────────────────────────────
         self._rviz_bridge.rviz_joint_state_received.connect(self._on_rviz_joint_state)
-        self._rviz_bridge.rviz_cartesian_state_received.connect(self._on_rviz_cart_state)
+        self._rviz_bridge.rviz_cartesian_state_received.connect(self._on_rviz_cartesian_state)
+        self._rviz_bridge.rviz_status_received.connect(self._on_rviz_status)
+        
+        # ── Publishers hacia RViz ────────────────────────────────────────
+        import rclpy
+        from rclpy.node import Node
+        from std_msgs.msg import Float64MultiArray
+        
+        # Crear un nodo independiente solo para publicar a RViz
+        self._rviz_pub_node = Node('kuka_dual_gui_rviz_publisher')
+        
+        self._rviz_joint_command_topic = "/kuka_bridge/joint_command_deg"
+        self._rviz_cartesian_command_topic = "/kuka_bridge/cartesian_command_deg"
+        
+        self._rviz_joint_pub = self._rviz_pub_node.create_publisher(
+            Float64MultiArray,
+            self._rviz_joint_command_topic,
+            10
+        )
+        self._rviz_cartesian_pub = self._rviz_pub_node.create_publisher(
+            Float64MultiArray,
+            self._rviz_cartesian_command_topic,
+            10
+        )
 
         # ── Feedback timeout timer ───────────────────────────────────
         self._feedback_timer = QTimer(self)
@@ -261,7 +302,7 @@ class DualKukaRvizWindow(QMainWindow):
         self._feedback_timer.start(500)
 
     # ===================================================================
-    # Screen 0: Welcome
+    # Screen 1: Welcome
     # ===================================================================
 
     def _build_welcome_screen(self):
@@ -271,23 +312,22 @@ class DualKukaRvizWindow(QMainWindow):
 
         title = QLabel('KUKA Joint Control GUI')
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(
-            f'font-size: 28px; font-weight: bold; color: {TEXT_PRI};'
-        )
+        title.setStyleSheet(f'font-size: 32px; font-weight: bold; color: {ACCENT};')
         layout.addWidget(title)
 
-        subtitle = QLabel('Modo Dual — KUKA Real + RViz/MoveIt2')
+        layout.addSpacing(10)
+
+        subtitle = QLabel('Sistema de envío de posiciones articulares\nhacia KUKA mediante ROS2 y EthernetKRL.')
         subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet(f'font-size: 15px; color: {ACCENT3};')
+        subtitle.setStyleSheet(f'font-size: 15px; color: {TEXT_SEC};')
         layout.addWidget(subtitle)
 
         layout.addSpacing(10)
 
         desc = QLabel(
-            'Envía comandos simultáneamente al KUKA real (TCP/IP)\n'
-            'y a RViz/MoveIt2 (ROS2 topics).\n\n'
-            'Protocolo KUKA: TCP/XML via EthernetKRL — Puerto 59153\n'
-            'Protocolo RViz: /kuka_bridge/joint_command_deg'
+            'Modo: XmlAxisMove\n'
+            'Protocolo: TCP/XML via EthernetKRL\n'
+            'Puerto: 59153'
         )
         desc.setAlignment(Qt.AlignCenter)
         desc.setStyleSheet(f'font-size: 13px; color: {TEXT_SEC};')
@@ -295,419 +335,505 @@ class DualKukaRvizWindow(QMainWindow):
 
         layout.addSpacing(30)
 
-        btn_dual = QPushButton('MODO DUAL: KUKA + RViz')
-        btn_dual.setStyleSheet(BTN_DUAL)
-        btn_dual.setCursor(Qt.PointingHandCursor)
-        btn_dual.clicked.connect(lambda: self._stack.setCurrentIndex(1))
-        layout.addWidget(btn_dual, alignment=Qt.AlignCenter)
+        btn_start = QPushButton('START')
+        btn_start.setStyleSheet(BTN_START)
+        btn_start.setCursor(Qt.PointingHandCursor)
+        btn_start.clicked.connect(self._on_start)
+        layout.addWidget(btn_start, alignment=Qt.AlignCenter)
 
         self._stack.addWidget(page)
 
     # ===================================================================
-    # Screen 1: Dual Control
+    # Screen 2: Control
     # ===================================================================
 
-    def _build_dual_control_screen(self):
+    def _build_control_screen(self):
         page = QWidget()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(page)
-        scroll.setStyleSheet('QScrollArea { border: none; }')
-
         main_layout = QVBoxLayout(page)
         main_layout.setContentsMargins(12, 8, 12, 8)
         main_layout.setSpacing(8)
 
-        # ── Header with BACK button ──────────────────────────────────
-        header = QHBoxLayout()
-        btn_back = QPushButton('← VOLVER')
-        btn_back.setStyleSheet(BTN_BACK)
-        btn_back.setCursor(Qt.PointingHandCursor)
-        btn_back.clicked.connect(self._on_back)
-        header.addWidget(btn_back)
+        # ── Status bar ───────────────────────────────────────────────
+        status_group = QGroupBox('Estado del Sistema')
+        status_layout = QGridLayout(status_group)
+        status_layout.setSpacing(6)
 
-        header.addStretch()
+        self._lbl_ros = self._make_status_label('ROS2:', 'Inactivo', TEXT_SEC)
+        status_layout.addWidget(self._lbl_ros[0], 0, 0)
+        status_layout.addWidget(self._lbl_ros[1], 0, 1)
 
-        lbl_title = QLabel('Modo Dual — KUKA Real + RViz/MoveIt2')
-        lbl_title.setStyleSheet(
-            f'font-size: 18px; font-weight: bold; color: {ACCENT3};'
+        self._lbl_kuka = self._make_status_label('KUKA:', 'Sin feedback', TEXT_SEC)
+        status_layout.addWidget(self._lbl_kuka[0], 0, 2)
+        status_layout.addWidget(self._lbl_kuka[1], 0, 3)
+
+        self._lbl_bridge = self._make_status_label('Bridge:', 'Esperando KUKA', TEXT_SEC)
+        status_layout.addWidget(self._lbl_bridge[0], 1, 0)
+        status_layout.addWidget(self._lbl_bridge[1], 1, 1)
+
+        self._lbl_safety = self._make_status_label('Seguridad:', 'safe_mode activo', WARN_CLR)
+        status_layout.addWidget(self._lbl_safety[0], 1, 2)
+        status_layout.addWidget(self._lbl_safety[1], 1, 3)
+
+        main_layout.addWidget(status_group)
+
+        # ── Safety banner ────────────────────────────────────────────
+        banner = QLabel('⚠ safe_mode del bridge puede bloquear EnableMove')
+        banner.setAlignment(Qt.AlignCenter)
+        banner.setStyleSheet(
+            f'background-color: #2d1b00; color: {WARN_CLR}; '
+            f'padding: 4px; border-radius: 4px; font-size: 12px;'
         )
-        header.addWidget(lbl_title)
-        header.addStretch()
-        main_layout.addLayout(header)
+        main_layout.addWidget(banner)
 
-        # ── Status panel ─────────────────────────────────────────────
-        self._build_status_panel(main_layout)
+
+        # Mode Selector removed in favor of QTabWidget tabs
+
+        # ── Tabs ─────────────────────────────────────────────────────
+        self._tabs = QTabWidget()
+        
+        self._tab_axis = QWidget()
+        layout_axis = QVBoxLayout(self._tab_axis)
+        
+        self._tab_cart = QWidget()
+        layout_cart = QVBoxLayout(self._tab_cart)
+        
+        self._tabs.addTab(self._tab_axis, 'Control por Ejes')
+        banner_cart = QLabel("Modo Cartesiano habilitado para RViz y TCP/IP KUKA real de forma simultánea.")
+        banner_cart.setAlignment(Qt.AlignCenter)
+        banner_cart.setStyleSheet(f'color: {WARN_CLR}; font-weight: bold; padding: 4px;')
+        layout_cart.insertWidget(0, banner_cart)
+        
+        self._tabs.addTab(self._tab_cart, 'Control Cartesiano')
+        
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        
+        main_layout.addWidget(self._tabs)
 
         # ── Joint table ──────────────────────────────────────────────
-        self._build_joint_table(main_layout)
+        table_group = QGroupBox('Posiciones Articulares')
+        table_layout = QGridLayout(table_group)
+        table_layout.setSpacing(4)
 
-        # ── Joint controls ───────────────────────────────────────────
-        self._build_joint_controls(main_layout)
-
-        # ── Action buttons ───────────────────────────────────────────
-        self._build_action_buttons(main_layout)
-
-        # ── Cartesian section ────────────────────────────────────────
-        self._build_cartesian_section(main_layout)
-
-        # ── Raw data viewers ─────────────────────────────────────────
-        self._build_raw_data_section(main_layout)
-
-        main_layout.addStretch()
-
-        self._stack.addWidget(scroll)
-
-    # ── Status panel ─────────────────────────────────────────────────
-
-    def _build_status_panel(self, parent_layout):
-        grp = QGroupBox('Estado del Sistema')
-        grid = QGridLayout(grp)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
-
-        # KUKA column
-        lbl_kuka_title = QLabel('KUKA Real (TCP/IP)')
-        lbl_kuka_title.setStyleSheet(f'font-weight: bold; color: {ACCENT};')
-        grid.addWidget(lbl_kuka_title, 0, 0, 1, 2)
-
-        grid.addWidget(QLabel('ROS2:'), 1, 0)
-        self._lbl_ros = QLabel('Esperando...')
-        self._lbl_ros.setStyleSheet(f'color: {TEXT_SEC};')
-        grid.addWidget(self._lbl_ros, 1, 1)
-
-        grid.addWidget(QLabel('KUKA:'), 2, 0)
-        self._lbl_kuka_status = QLabel('Sin feedback')
-        self._lbl_kuka_status.setStyleSheet(f'color: {TEXT_SEC};')
-        grid.addWidget(self._lbl_kuka_status, 2, 1)
-
-        grid.addWidget(QLabel('Safe Mode:'), 3, 0)
-        self._lbl_safe = QLabel('—')
-        grid.addWidget(self._lbl_safe, 3, 1)
-
-        grid.addWidget(QLabel('Publicar a KUKA:'), 4, 0)
-        self._chk_pub_kuka = QCheckBox()
-        self._chk_pub_kuka.setChecked(self._model.publish_to_kuka)
-        self._chk_pub_kuka.toggled.connect(
-            lambda v: setattr(self._model, 'publish_to_kuka', v)
-        )
-        grid.addWidget(self._chk_pub_kuka, 4, 1)
-
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet(f'color: {BORDER_CLR};')
-        grid.addWidget(sep, 0, 2, 5, 1)
-
-        # RViz column
-        lbl_rviz_title = QLabel('RViz / MoveIt2')
-        lbl_rviz_title.setStyleSheet(f'font-weight: bold; color: {RVIZ_CLR};')
-        grid.addWidget(lbl_rviz_title, 0, 3, 1, 2)
-
-        grid.addWidget(QLabel('MoveIt Status:'), 1, 3)
-        self._lbl_moveit = QLabel('Sin estado')
-        self._lbl_moveit.setStyleSheet(f'color: {TEXT_SEC};')
-        grid.addWidget(self._lbl_moveit, 1, 4)
-
-        grid.addWidget(QLabel('Joint State:'), 2, 3)
-        self._lbl_rviz_joints = QLabel('—')
-        self._lbl_rviz_joints.setStyleSheet(f'color: {TEXT_SEC};')
-        grid.addWidget(self._lbl_rviz_joints, 2, 4)
-
-        grid.addWidget(QLabel('Cartesiano:'), 3, 3)
-        self._lbl_rviz_cart = QLabel('—')
-        self._lbl_rviz_cart.setStyleSheet(f'color: {TEXT_SEC};')
-        grid.addWidget(self._lbl_rviz_cart, 3, 4)
-
-        grid.addWidget(QLabel('Publicar a RViz:'), 4, 3)
-        self._chk_pub_rviz = QCheckBox()
-        self._chk_pub_rviz.setChecked(self._model.publish_to_rviz)
-        self._chk_pub_rviz.toggled.connect(
-            lambda v: setattr(self._model, 'publish_to_rviz', v)
-        )
-        grid.addWidget(self._chk_pub_rviz, 4, 4)
-
-        parent_layout.addWidget(grp)
-
-    # ── Joint table ──────────────────────────────────────────────────
-
-    def _build_joint_table(self, parent_layout):
-        grp = QGroupBox('Tabla de Joints — KUKA vs RViz')
-        grid = QGridLayout(grp)
-        grid.setSpacing(4)
-
-        headers = ['Joint', 'Target (°)', 'KUKA fb (°)', 'RViz fb (°)',
-                    'Error KUKA', 'Error RViz']
-        for col, h in enumerate(headers):
-            lbl = QLabel(h)
-            lbl.setStyleSheet(
-                f'font-weight: bold; color: {TEXT_SEC}; font-size: 11px;'
-            )
+        # Header
+        headers = ['Joint', 'Target', 'KUKA fb', 'RViz fb', 'Err KUKA', 'Err RViz']
+        for col, hdr in enumerate(headers):
+            lbl = QLabel(hdr)
+            lbl.setStyleSheet(f'font-weight: bold; color: {ACCENT}; font-size: 12px;')
             lbl.setAlignment(Qt.AlignCenter)
-            grid.addWidget(lbl, 0, col)
+            table_layout.addWidget(lbl, 0, col)
 
         self._table_labels: Dict[str, Dict[str, QLabel]] = {}
         for row, axis in enumerate(AXES, start=1):
-            labels = {}
+            self._table_labels[axis] = {}
 
-            # Joint name
             lbl_name = QLabel(axis)
-            lbl_name.setStyleSheet(f'font-weight: bold; color: {ACCENT};')
             lbl_name.setAlignment(Qt.AlignCenter)
-            grid.addWidget(lbl_name, row, 0)
+            lbl_name.setStyleSheet('font-weight: bold;')
+            table_layout.addWidget(lbl_name, row, 0)
 
-            for col, key in enumerate(
-                ['target', 'kuka_fb', 'rviz_fb', 'err_kuka', 'err_rviz'],
-                start=1,
-            ):
-                lbl = QLabel('—')
-                lbl.setAlignment(Qt.AlignCenter)
-                lbl.setStyleSheet(f'color: {TEXT_PRI}; font-size: 12px;')
-                grid.addWidget(lbl, row, col)
-                labels[key] = lbl
+            lbl_target = QLabel('0.00')
+            lbl_target.setAlignment(Qt.AlignCenter)
+            table_layout.addWidget(lbl_target, row, 1)
+            self._table_labels[axis]['target'] = lbl_target
 
-            self._table_labels[axis] = labels
+            lbl_fb = QLabel('N/A')
+            lbl_fb.setAlignment(Qt.AlignCenter)
+            lbl_fb.setStyleSheet(f'color: {TEXT_SEC};')
+            table_layout.addWidget(lbl_fb, row, 2)
+            self._table_labels[axis]['feedback'] = lbl_fb
 
-        parent_layout.addWidget(grp)
+            lbl_rviz_fb = QLabel('N/A')
+            lbl_rviz_fb.setAlignment(Qt.AlignCenter)
+            lbl_rviz_fb.setStyleSheet(f'color: {TEXT_SEC};')
+            table_layout.addWidget(lbl_rviz_fb, row, 3)
+            self._table_labels[axis]['rviz_feedback'] = lbl_rviz_fb
 
-    # ── Joint controls ───────────────────────────────────────────────
+            lbl_err = QLabel('N/A')
+            lbl_err.setAlignment(Qt.AlignCenter)
+            lbl_err.setStyleSheet(f'color: {TEXT_SEC};')
+            table_layout.addWidget(lbl_err, row, 4)
+            self._table_labels[axis]['error'] = lbl_err
 
-    def _build_joint_controls(self, parent_layout):
-        grp = QGroupBox('Controles de Joints (A1-A6)')
-        grid = QGridLayout(grp)
-        grid.setSpacing(6)
+            lbl_err_rviz = QLabel('N/A')
+            lbl_err_rviz.setAlignment(Qt.AlignCenter)
+            lbl_err_rviz.setStyleSheet(f'color: {TEXT_SEC};')
+            table_layout.addWidget(lbl_err_rviz, row, 5)
+            self._table_labels[axis]['error_rviz'] = lbl_err_rviz
+
+        layout_axis.addWidget(table_group)
+
+        # ── Joint controls ───────────────────────────────────────────
+        controls_group = QGroupBox('Control de Articulaciones')
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setSpacing(4)
 
         self._joint_inputs: Dict[str, QLineEdit] = {}
+        self._joint_minus: Dict[str, QPushButton] = {}
+        self._joint_plus: Dict[str, QPushButton] = {}
 
-        for i, axis in enumerate(AXES):
-            row = i // 3
-            col_base = (i % 3) * 4
-
+        for row, axis in enumerate(AXES):
             lbl = QLabel(axis)
-            lbl.setStyleSheet(f'font-weight: bold; color: {ACCENT};')
-            grid.addWidget(lbl, row, col_base)
+            lbl.setStyleSheet('font-weight: bold; min-width: 30px;')
+            controls_layout.addWidget(lbl, row, 0)
 
             btn_minus = QPushButton('−')
-            btn_minus.setFixedWidth(32)
+            btn_minus.setStyleSheet(BTN_PM)
             btn_minus.setCursor(Qt.PointingHandCursor)
-            btn_minus.clicked.connect(
-                lambda _, a=axis: self._on_step(a, -1)
-            )
-            grid.addWidget(btn_minus, row, col_base + 1)
+            btn_minus.clicked.connect(lambda checked, a=axis: self._on_step(a, -1))
+            controls_layout.addWidget(btn_minus, row, 1)
+            self._joint_minus[axis] = btn_minus
 
             inp = QLineEdit(f'{self._model.get_target(axis):.2f}')
-            inp.setFixedWidth(80)
             inp.setAlignment(Qt.AlignCenter)
-            inp.returnPressed.connect(
-                lambda a=axis: self._on_input_changed(a)
-            )
-            grid.addWidget(inp, row, col_base + 2)
+            inp.setFixedWidth(100)
+            inp.editingFinished.connect(lambda a=axis: self._on_input_changed(a))
+            controls_layout.addWidget(inp, row, 2)
             self._joint_inputs[axis] = inp
 
             btn_plus = QPushButton('+')
-            btn_plus.setFixedWidth(32)
+            btn_plus.setStyleSheet(BTN_PM)
             btn_plus.setCursor(Qt.PointingHandCursor)
-            btn_plus.clicked.connect(
-                lambda _, a=axis: self._on_step(a, +1)
-            )
-            grid.addWidget(btn_plus, row, col_base + 3)
+            btn_plus.clicked.connect(lambda checked, a=axis: self._on_step(a, +1))
+            controls_layout.addWidget(btn_plus, row, 3)
+            self._joint_plus[axis] = btn_plus
 
-        # Enable move checkbox
-        row_extra = 2
-        self._chk_enable = QCheckBox('ENABLE MOVE (KUKA)')
-        self._chk_enable.setChecked(self._model.get_enable_move())
-        self._chk_enable.toggled.connect(self._on_enable_toggled)
-        grid.addWidget(self._chk_enable, row_extra, 0, 1, 4)
+            lbl_deg = QLabel('deg')
+            lbl_deg.setStyleSheet(f'color: {TEXT_SEC};')
+            controls_layout.addWidget(lbl_deg, row, 4)
 
-        parent_layout.addWidget(grp)
+        layout_axis.addWidget(controls_group)
 
-    # ── Action buttons ───────────────────────────────────────────────
+        # ── Cartesian table ──────────────────────────────────────────────
+        cart_table_group = QGroupBox('Posiciones Cartesianas')
+        cart_table_layout = QGridLayout(cart_table_group)
+        cart_table_layout.setSpacing(4)
 
-    def _build_action_buttons(self, parent_layout):
-        layout = QHBoxLayout()
+        for col, hdr in enumerate(['Cartesiano', 'Target', 'Feedback', 'Error']):
+            lbl = QLabel(hdr)
+            lbl.setStyleSheet(f'font-weight: bold; color: {ACCENT}; font-size: 12px;')
+            lbl.setAlignment(Qt.AlignCenter)
+            cart_table_layout.addWidget(lbl, 0, col)
 
-        btn_send = QPushButton('SEND DUAL')
-        btn_send.setStyleSheet(BTN_SEND)
-        btn_send.setCursor(Qt.PointingHandCursor)
-        btn_send.clicked.connect(self._on_send)
-        layout.addWidget(btn_send)
+        for row, axis in enumerate(CARTESIAN_AXES, start=1):
+            self._table_labels[axis] = {}
+            lbl_name = QLabel(axis)
+            lbl_name.setAlignment(Qt.AlignCenter)
+            lbl_name.setStyleSheet('font-weight: bold;')
+            cart_table_layout.addWidget(lbl_name, row, 0)
 
-        btn_home = QPushButton('HOME')
-        btn_home.setCursor(Qt.PointingHandCursor)
-        btn_home.clicked.connect(self._on_home)
-        layout.addWidget(btn_home)
+            lbl_target = QLabel('0.00')
+            lbl_target.setAlignment(Qt.AlignCenter)
+            cart_table_layout.addWidget(lbl_target, row, 1)
+            self._table_labels[axis]['target'] = lbl_target
+
+            lbl_fb = QLabel('N/A')
+            lbl_fb.setAlignment(Qt.AlignCenter)
+            lbl_fb.setStyleSheet(f'color: {TEXT_SEC};')
+            cart_table_layout.addWidget(lbl_fb, row, 2)
+            self._table_labels[axis]['feedback'] = lbl_fb
+
+            lbl_err = QLabel('N/A')
+            lbl_err.setAlignment(Qt.AlignCenter)
+            lbl_err.setStyleSheet(f'color: {TEXT_SEC};')
+            cart_table_layout.addWidget(lbl_err, row, 3)
+            self._table_labels[axis]['error'] = lbl_err
+
+        layout_cart.addWidget(cart_table_group)
+
+        # ── Cartesian controls ───────────────────────────────────────────
+        cart_controls_group = QGroupBox('Control Cartesiano')
+        cart_controls_layout = QGridLayout(cart_controls_group)
+        cart_controls_layout.setSpacing(4)
+
+        for row, axis in enumerate(CARTESIAN_AXES):
+            lbl = QLabel(axis)
+            lbl.setStyleSheet('font-weight: bold; min-width: 30px;')
+            cart_controls_layout.addWidget(lbl, row, 0)
+
+            btn_minus = QPushButton('−')
+            btn_minus.setStyleSheet(BTN_PM)
+            btn_minus.setCursor(Qt.PointingHandCursor)
+            btn_minus.clicked.connect(lambda checked, a=axis: self._on_step(a, -1))
+            cart_controls_layout.addWidget(btn_minus, row, 1)
+            self._joint_minus[axis] = btn_minus
+
+            inp = QLineEdit(f'{self._model.get_target(axis):.2f}')
+            inp.setAlignment(Qt.AlignCenter)
+            inp.setFixedWidth(100)
+            inp.editingFinished.connect(lambda a=axis: self._on_input_changed(a))
+            cart_controls_layout.addWidget(inp, row, 2)
+            self._joint_inputs[axis] = inp
+
+            btn_plus = QPushButton('+')
+            btn_plus.setStyleSheet(BTN_PM)
+            btn_plus.setCursor(Qt.PointingHandCursor)
+            btn_plus.clicked.connect(lambda checked, a=axis: self._on_step(a, +1))
+            cart_controls_layout.addWidget(btn_plus, row, 3)
+            self._joint_plus[axis] = btn_plus
+
+            lbl_deg = QLabel('mm' if axis in ['X', 'Y', 'Z'] else 'deg')
+            lbl_deg.setStyleSheet(f'color: {TEXT_SEC};')
+            cart_controls_layout.addWidget(lbl_deg, row, 4)
+
+        layout_cart.addWidget(cart_controls_group)
+
+
+        # ── Action buttons ───────────────────────────────────────────
+        btn_layout = QHBoxLayout()
+
+        self._btn_home = QPushButton('HOME')
+        self._btn_home.setStyleSheet(BTN_HOME)
+        self._btn_home.setCursor(Qt.PointingHandCursor)
+        self._btn_home.clicked.connect(self._on_home)
+        btn_layout.addWidget(self._btn_home)
+
+        self._btn_send = QPushButton('SEND')
+        self._btn_send.setStyleSheet(BTN_SEND)
+        self._btn_send.setCursor(Qt.PointingHandCursor)
+        self._btn_send.clicked.connect(self._on_send)
+        btn_layout.addWidget(self._btn_send)
 
         self._btn_auto = QPushButton('AUTO')
-        self._btn_auto.setStyleSheet(
-            f'QPushButton {{ background-color: {AUTO_ON_CLR}; color: white; '
-            f'font-weight: bold; padding: 8px 24px; border-radius: 6px; border: none; }}'
-            f'QPushButton:hover {{ background-color: #58a6ff; }}'
-        )
+        self._btn_auto.setStyleSheet(BTN_AUTO)
         self._btn_auto.setCursor(Qt.PointingHandCursor)
         self._btn_auto.clicked.connect(self._on_auto)
-        layout.addWidget(self._btn_auto)
+        btn_layout.addWidget(self._btn_auto)
 
-        self._btn_stop = QPushButton('STOP AUTO')
-        self._btn_stop.setStyleSheet(BTN_STOP)
-        self._btn_stop.setCursor(Qt.PointingHandCursor)
-        self._btn_stop.clicked.connect(self._on_stop_auto)
-        self._btn_stop.setEnabled(False)
-        layout.addWidget(self._btn_stop)
+        self._btn_stop_auto = QPushButton('STOP AUTO')
+        self._btn_stop_auto.setStyleSheet(BTN_STOP)
+        self._btn_stop_auto.setCursor(Qt.PointingHandCursor)
+        self._btn_stop_auto.clicked.connect(self._on_stop_auto)
+        self._btn_stop_auto.setEnabled(False)
+        btn_layout.addWidget(self._btn_stop_auto)
 
-        parent_layout.addLayout(layout)
+        self._btn_reset = QPushButton('RESET GUI')
+        self._btn_reset.setStyleSheet(BTN_RESET)
+        self._btn_reset.setCursor(Qt.PointingHandCursor)
+        self._btn_reset.clicked.connect(self._on_reset)
+        btn_layout.addWidget(self._btn_reset)
 
-    # ── Cartesian section ────────────────────────────────────────────
+        main_layout.addLayout(btn_layout)
 
-    def _build_cartesian_section(self, parent_layout):
-        grp = QGroupBox('Mundo / Cartesiano — Solo RViz')
-        grp_layout = QVBoxLayout(grp)
-
-        # Warning label
-        lbl_warn = QLabel(
-            '⚠ Cartesiano/Mundo disponible solo para RViz. '
-            'No se envía al KUKA real por TCP/IP.'
+        # ── Enable Move toggle ───────────────────────────────────────
+        enable_layout = QHBoxLayout()
+        self._chk_enable_move = QCheckBox('ENABLE MOVE')
+        self._chk_enable_move.setChecked(False)
+        self._chk_enable_move.setStyleSheet(
+            f'QCheckBox {{ color: {WARN_CLR}; font-weight: bold; font-size: 13px; }}'
         )
-        lbl_warn.setStyleSheet(
-            f'color: {WARN_CLR}; font-size: 11px; font-style: italic; '
-            f'padding: 4px;'
-        )
-        lbl_warn.setWordWrap(True)
-        grp_layout.addWidget(lbl_warn)
+        self._chk_enable_move.stateChanged.connect(self._on_enable_move_changed)
+        enable_layout.addWidget(self._chk_enable_move)
 
-        # Cartesian inputs
-        cart_grid = QGridLayout()
-        self._cart_inputs: Dict[str, QLineEdit] = {}
+        self._lbl_enable_status = QLabel('enable_move = false')
+        self._lbl_enable_status.setStyleSheet(f'color: {TEXT_SEC}; font-size: 12px;')
+        enable_layout.addWidget(self._lbl_enable_status)
+        enable_layout.addStretch()
 
-        units = {'X': 'm', 'Y': 'm', 'Z': 'm', 'A': '°', 'B': '°', 'C': '°'}
+        main_layout.addLayout(enable_layout)
 
-        for i, key in enumerate(CART_KEYS):
-            col_base = (i % 3) * 3
-            row = i // 3
+        # ── Info panels ──────────────────────────────────────────────
+        if self._show_raw_json or self._show_raw_xml:
+            info_group = QGroupBox('Comunicación')
+            info_layout = QGridLayout(info_group)
 
-            lbl = QLabel(f'{key} ({units[key]})')
-            lbl.setStyleSheet(f'font-weight: bold; color: {RVIZ_CLR};')
-            cart_grid.addWidget(lbl, row, col_base)
+            col = 0
+            if self._show_raw_json:
+                # Last feedback JSON
+                info_layout.addWidget(QLabel('Último feedback JSON:'), 0, col)
+                self._txt_feedback = QTextEdit()
+                self._txt_feedback.setReadOnly(True)
+                self._txt_feedback.setMaximumHeight(90)
+                info_layout.addWidget(self._txt_feedback, 1, col)
 
-            inp = QLineEdit(f'{self._model.get_cart_target(key):.4f}')
-            inp.setFixedWidth(100)
-            inp.setAlignment(Qt.AlignCenter)
-            cart_grid.addWidget(inp, row, col_base + 1)
-            self._cart_inputs[key] = inp
+                col += 1
+                # Last command JSON
+                info_layout.addWidget(QLabel('Último comando JSON:'), 0, col)
+                self._txt_command = QTextEdit()
+                self._txt_command.setReadOnly(True)
+                self._txt_command.setMaximumHeight(90)
+                info_layout.addWidget(self._txt_command, 1, col)
+                col += 1
 
-        grp_layout.addLayout(cart_grid)
+            if self._show_raw_xml:
+                # Last command XML
+                info_layout.addWidget(QLabel('Último XML enviado:'), 0, col)
+                self._txt_cmd_xml = QTextEdit()
+                self._txt_cmd_xml.setReadOnly(True)
+                self._txt_cmd_xml.setMaximumHeight(90)
+                info_layout.addWidget(self._txt_cmd_xml, 1, col)
+                col += 1
 
-        # Cartesian buttons
-        cart_btns = QHBoxLayout()
+            main_layout.addWidget(info_group)
 
-        btn_send_cart = QPushButton('SEND CARTESIAN TO RViz')
-        btn_send_cart.setStyleSheet(
-            f'QPushButton {{ background-color: {RVIZ_CLR}; color: #0d1117; '
-            f'font-weight: bold; padding: 8px 20px; border-radius: 6px; border: none; }}'
-            f'QPushButton:hover {{ background-color: #e2bfff; }}'
-        )
-        btn_send_cart.setCursor(Qt.PointingHandCursor)
-        btn_send_cart.clicked.connect(self._on_send_cartesian)
-        cart_btns.addWidget(btn_send_cart)
-
-        btn_reset_cart = QPushButton('RESET CARTESIAN')
-        btn_reset_cart.setCursor(Qt.PointingHandCursor)
-        btn_reset_cart.clicked.connect(self._on_reset_cartesian)
-        cart_btns.addWidget(btn_reset_cart)
-
-        grp_layout.addLayout(cart_btns)
-
-        # Last cartesian state feedback
-        self._lbl_cart_last = QLabel('Último estado cartesiano RViz: —')
-        self._lbl_cart_last.setStyleSheet(f'color: {TEXT_SEC}; font-size: 11px;')
-        grp_layout.addWidget(self._lbl_cart_last)
-
-        parent_layout.addWidget(grp)
-
-    # ── Raw data section ─────────────────────────────────────────────
-
-    def _build_raw_data_section(self, parent_layout):
-        grp = QGroupBox('Datos Raw — JSON / XML')
-        layout = QHBoxLayout(grp)
-
-        # Command JSON
-        col1 = QVBoxLayout()
-        col1.addWidget(QLabel('Último comando JSON:'))
-        self._txt_command = QTextEdit()
-        self._txt_command.setReadOnly(True)
-        self._txt_command.setMaximumHeight(100)
-        col1.addWidget(self._txt_command)
-        layout.addLayout(col1)
-
-        # Command XML
-        col2 = QVBoxLayout()
-        col2.addWidget(QLabel('Último XML enviado:'))
-        self._txt_cmd_xml = QTextEdit()
-        self._txt_cmd_xml.setReadOnly(True)
-        self._txt_cmd_xml.setMaximumHeight(100)
-        col2.addWidget(self._txt_cmd_xml)
-        layout.addLayout(col2)
-
-        # Robot XML
-        col3 = QVBoxLayout()
-        col3.addWidget(QLabel('Último XML recibido:'))
-        self._txt_robot_xml = QTextEdit()
-        self._txt_robot_xml.setReadOnly(True)
-        self._txt_robot_xml.setMaximumHeight(100)
-        col3.addWidget(self._txt_robot_xml)
-        layout.addLayout(col3)
-
-        parent_layout.addWidget(grp)
+        self._stack.addWidget(page)
+        self._refresh_table()
+        self._refresh_inputs()
 
     # ===================================================================
-    # Validate and send (dual)
+    # Helpers
     # ===================================================================
+
+    def _make_status_label(self, name, initial, color):
+        lbl_name = QLabel(name)
+        lbl_name.setStyleSheet(f'font-weight: bold; color: {TEXT_SEC};')
+        lbl_val = QLabel(initial)
+        lbl_val.setStyleSheet(f'color: {color}; font-weight: bold;')
+        return (lbl_name, lbl_val)
+
+
+    def _on_tab_changed(self, index: int):
+        if index == 0:
+            self._model.set_target_mode('AxisTarget')
+        else:
+            self._model.set_target_mode('CartesianTarget')
+        self._refresh_inputs()
+        
+    def _refresh_table(self):
+        """Refresh all table labels from the model."""
+        for axis in AXES + CARTESIAN_AXES:
+            target = self._model.get_target(axis)
+            feedback = self._model.get_feedback(axis)
+            error = self._model.get_error(axis)
+
+            self._table_labels[axis]['target'].setText(f'{target:.2f}')
+
+            if feedback is not None:
+                self._table_labels[axis]['feedback'].setText(f'{feedback:.2f}')
+                self._table_labels[axis]['feedback'].setStyleSheet(f'color: {TEXT_PRI};')
+            else:
+                self._table_labels[axis]['feedback'].setText('N/A')
+                self._table_labels[axis]['feedback'].setStyleSheet(f'color: {TEXT_SEC};')
+
+            if error is not None:
+                self._table_labels[axis]['error'].setText(f'{error:.2f}')
+                clr = WARN_CLR if abs(error) > 1.0 else TEXT_PRI
+                self._table_labels[axis]['error'].setStyleSheet(f'color: {clr};')
+            else:
+                self._table_labels[axis]['error'].setText('N/A')
+                self._table_labels[axis]['error'].setStyleSheet(f'color: {TEXT_SEC};')
+
+    def _refresh_inputs(self):
+        """Refresh all input fields from the model and check limits."""
+        all_ok = True
+        for axis in AXES + CARTESIAN_AXES:
+            val = self._model.get_target(axis)
+            inp = self._joint_inputs[axis]
+            inp.setText(f'{val:.2f}')
+
+            if self._model.is_in_limits(axis):
+                inp.setStyleSheet(
+                    f'background-color: {PANEL_BG}; border: 1px solid {BORDER_CLR}; '
+                    f'border-radius: 4px; color: {TEXT_PRI}; padding: 3px 6px;'
+                )
+            else:
+                all_ok = False
+                inp.setStyleSheet(
+                    f'background-color: #3d1111; border: 1px solid {ERROR_CLR}; '
+                    f'border-radius: 4px; color: {ERROR_CLR}; padding: 3px 6px;'
+                )
+
+        self._btn_send.setEnabled(all_ok)
+
+    def send_joint_command(self):
+        """Publica el comando articular a KUKA TCP/IP y a RViz."""
+        target_json = self._model.build_target_json()
+        
+        # TCP/IP KUKA real
+        if self._model.publish_joints_to_kuka:
+            self._kuka_bridge.publish_command(target_json)
+            
+        # RViz / MoveIt2
+        if self._model.publish_joints_to_rviz:
+            arr = self._model.build_rviz_joint_array()
+            
+            # Deduplicación para no congelar MoveIt si se mantiene presionado SEND
+            if not hasattr(self, '_last_rviz_joints') or self._last_rviz_joints != arr:
+                from std_msgs.msg import Float64MultiArray
+                msg = Float64MultiArray()
+                msg.data = [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3]), float(arr[4]), float(arr[5])]
+                self._rviz_joint_pub.publish(msg)
+                
+                self._rviz_pub_node.get_logger().info(
+                    f"CMD RVIZ JOINT → A1={arr[0]} A2={arr[1]} A3={arr[2]} A4={arr[3]} A5={arr[4]} A6={arr[5]}"
+                )
+                self._last_rviz_joints = list(arr)
+                
+        # Update UI JSON viewer
+        if self._show_raw_json and hasattr(self, '_txt_command'):
+            try:
+                import json
+                pretty = json.dumps(json.loads(target_json), indent=2)
+                self._txt_command.setPlainText(pretty)
+            except Exception:
+                self._txt_command.setPlainText(target_json)
+
+    def send_cartesian_command(self):
+        """Publica el comando cartesiano a RViz (y opcionalmente a KUKA)."""
+        # RViz / MoveIt2
+        if self._model.publish_cartesian_to_rviz:
+            arr = self._model.build_cartesian_array()
+            # RViz necesita metros
+            arr[0] /= 1000.0
+            arr[1] /= 1000.0
+            arr[2] /= 1000.0
+            
+            if not hasattr(self, '_last_rviz_cartesian') or self._last_rviz_cartesian != arr:
+                from std_msgs.msg import Float64MultiArray
+                msg = Float64MultiArray()
+                msg.data = [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3]), float(arr[4]), float(arr[5])]
+                self._rviz_cartesian_pub.publish(msg)
+                
+                self._rviz_pub_node.get_logger().info(
+                    f"CMD RVIZ CARTESIAN → X={arr[0]} Y={arr[1]} Z={arr[2]} A={arr[3]} B={arr[4]} C={arr[5]}"
+                )
+                self._last_rviz_cartesian = list(arr)
+                
+        # TCP/IP KUKA real
+        if self._model.publish_cartesian_to_kuka:
+            target_json = self._model.build_target_json()
+            self._kuka_bridge.publish_command(target_json)
+            
+        # Update UI JSON viewer
+        if self._show_raw_json and hasattr(self, '_txt_command'):
+            if not self._model.publish_cartesian_to_kuka:
+                target_json = self._model.build_target_json()
+            try:
+                import json
+                pretty = json.dumps(json.loads(target_json), indent=2)
+                self._txt_command.setPlainText(pretty)
+            except Exception:
+                self._txt_command.setPlainText(target_json)
 
     def _validate_and_send(self):
-        """
-        Build JSON for KUKA and Float64MultiArray for RViz,
-        validate, and publish atomically.
-        """
+        """Called by SEND button or auto timer."""
         if not self._model.all_targets_in_limits():
             return
 
-        # Build KUKA JSON (increments seq)
-        json_str = self._model.build_target_json()
-
-        # Publish to KUKA TCP/IP
-        if self._model.publish_to_kuka:
-            self._kuka_bridge.publish_command(json_str)
-
-        # Publish to RViz/MoveIt2
-        if self._model.publish_to_rviz:
-            joint_array = self._model.build_rviz_joint_array()
-            self._rviz_bridge.publish_joints(joint_array)
-
-        # Update command display
-        if hasattr(self, '_txt_command'):
-            try:
-                pretty = json.dumps(json.loads(json_str), indent=2)
-                self._txt_command.setPlainText(pretty)
-            except Exception:
-                self._txt_command.setPlainText(json_str)
+        mode = self._model.get_target_mode()
+        
+        if mode == 'AxisTarget' or mode == 'joints':
+            self.send_joint_command()
+        elif mode == 'CartesianTarget' or mode == 'cartesian':
+            self.send_cartesian_command()
 
     # ===================================================================
     # Button handlers
     # ===================================================================
 
-    def _on_back(self):
-        """Return to welcome screen. Stop auto if running."""
-        self._on_stop_auto()
-        self._stack.setCurrentIndex(0)
+    def _on_start(self):
+        """Switch to control screen (no command published)."""
+        self._stack.setCurrentIndex(1)
 
     def _on_home(self):
-        """Load home position and send."""
+        """Load home position values (publish only if auto is running)."""
         self._model.load_home()
         self._refresh_inputs()
         self._refresh_table()
-        self._validate_and_send()
+        if self._auto_running:
+            pass  # Auto timer will publish on next tick
 
     def _on_send(self):
-        """Manual dual send."""
+        """Manual send: publish and hold the command for several cycles."""
         if not self._model.all_targets_in_limits():
             return
 
@@ -716,7 +842,7 @@ class DualKukaRvizWindow(QMainWindow):
                 self,
                 'Confirmar primer envío',
                 'Este es el primer SEND de esta sesión.\n'
-                '¿Confirmas que deseas enviar el comando?\n\n'
+                '¿Confirmas que deseas enviar el comando al bridge?\n\n'
                 'El movimiento real depende de safe_mode y allow_motion_commands.',
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
@@ -725,20 +851,21 @@ class DualKukaRvizWindow(QMainWindow):
                 return
             self._first_send_confirmed = True
 
-        self._model.set_mode('manual_send')
+        self._model.set_node_mode('manual_send')
         self._validate_and_send()
         self._refresh_table()
 
-        # Hold: keep re-sending for ~3 seconds
+        # Hold: keep re-sending for ~3 seconds so the bridge doesn't
+        # mark the command as stale before the KUKA can execute it.
         self._send_hold_count = 0
         if self._send_hold_timer is not None:
             self._send_hold_timer.stop()
         self._send_hold_timer = QTimer(self)
         self._send_hold_timer.timeout.connect(self._send_hold_tick)
-        self._send_hold_timer.start(200)
+        self._send_hold_timer.start(200)  # re-send every 200ms
 
     def _on_auto(self):
-        """Start automatic dual publishing."""
+        """Start automatic publishing at auto_publish_hz."""
         if not self._allow_auto_mode:
             QMessageBox.warning(
                 self, 'Modo Auto desactivado',
@@ -749,14 +876,16 @@ class DualKukaRvizWindow(QMainWindow):
         if self._auto_running:
             return
 
-        self._model.set_mode('auto')
-        interval = max(50, int(1000.0 / self._auto_hz))
+        self._model.set_node_mode('auto')
+        interval_ms = max(50, int(1000.0 / self._auto_hz))
+
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self._auto_tick)
-        self._auto_timer.start(interval)
+        self._auto_timer.start(interval_ms)
         self._auto_running = True
+
         self._btn_auto.setEnabled(False)
-        self._btn_stop.setEnabled(True)
+        self._btn_stop_auto.setEnabled(True)
 
     def _on_stop_auto(self):
         """Stop automatic publishing."""
@@ -764,63 +893,70 @@ class DualKukaRvizWindow(QMainWindow):
             self._auto_timer.stop()
             self._auto_timer = None
         self._auto_running = False
+        self._model.set_node_mode('manual_send')
+
         self._btn_auto.setEnabled(True)
-        self._btn_stop.setEnabled(False)
+        self._btn_stop_auto.setEnabled(False)
 
-    def _on_enable_toggled(self, checked):
-        """Toggle ENABLE MOVE flag."""
-        self._model.set_enable_move(checked)
+    def _on_reset(self):
+        """Reset GUI to home position, clear errors."""
+        self._model.load_home()
+        self._model.clear_feedback()
+        self._refresh_inputs()
+        self._refresh_table()
 
-    def _on_send_cartesian(self):
-        """Send cartesian command to RViz only."""
-        # Read values from inputs
-        for key in CART_KEYS:
-            try:
-                val = float(self._cart_inputs[key].text())
-                self._model.set_cart_target(key, val)
-            except ValueError:
-                QMessageBox.warning(
-                    self, 'Valor inválido',
-                    f'El valor de {key} no es un número válido.'
-                )
-                return
+        if self._show_raw_json and hasattr(self, '_txt_feedback'):
+            self._txt_feedback.clear()
+        if self._show_raw_json and hasattr(self, '_txt_command'):
+            self._txt_command.clear()
+        if self._show_raw_xml and hasattr(self, '_txt_cmd_xml'):
+            self._txt_cmd_xml.clear()
 
-        if not self._model.cartesian_to_rviz:
-            QMessageBox.information(
-                self, 'Cartesiano desactivado',
-                'cartesian_to_rviz está desactivado.'
+    def _on_enable_move_changed(self, state):
+        """Handle enable move checkbox change."""
+        checked = (state == Qt.Checked)
+
+        if checked and not self._enable_move_confirmed:
+            reply = QMessageBox.warning(
+                self,
+                'Habilitar EnableMove',
+                'Esto permite enviar EnableMove=true al bridge.\n\n'
+                'El movimiento real solo será posible si:\n'
+                '  • safe_mode = false\n'
+                '  • allow_motion_commands = true\n'
+                '  en el bridge.\n\n'
+                '¿Deseas continuar?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
-            return
+            if reply != QMessageBox.Yes:
+                self._chk_enable_move.blockSignals(True)
+                self._chk_enable_move.setChecked(False)
+                self._chk_enable_move.blockSignals(False)
+                return
+            self._enable_move_confirmed = True
 
-        cart_array = self._model.build_cartesian_array()
-        self._rviz_bridge.publish_cartesian(cart_array)
+        # If in auto mode but auto motion not allowed, override
+        effective = checked
+        if self._auto_running and not self._allow_auto_motion:
+            effective = False
 
-        # Update display
-        self._lbl_cart_last.setText(
-            f'Último envío: '
-            + ' '.join(f'{k}={cart_array[i]:.4f}' for i, k in enumerate(CART_KEYS))
-        )
-
-    def _on_reset_cartesian(self):
-        """Reset cartesian inputs to zero."""
-        self._model.reset_cart_targets()
-        for key in CART_KEYS:
-            self._cart_inputs[key].setText('0.0000')
-
-    # ===================================================================
-    # Joint input handlers
-    # ===================================================================
+        self._model.set_enable_move(effective)
+        status_text = 'enable_move = true' if checked else 'enable_move = false'
+        clr = ACCENT2 if checked else TEXT_SEC
+        self._lbl_enable_status.setText(status_text)
+        self._lbl_enable_status.setStyleSheet(f'color: {clr}; font-size: 12px;')
 
     def _on_step(self, axis: str, direction: int):
-        """Step a joint value by step_deg."""
-        new_val = self._model.step_target(axis, direction)
-        self._joint_inputs[axis].setText(f'{new_val:.2f}')
+        """Increment or decrement a joint target."""
+        self._model.step_target(axis, direction)
+        self._refresh_inputs()
         self._refresh_table()
 
     def _on_input_changed(self, axis: str):
-        """Handle manual input change."""
+        """Handle manual edit of a joint input field."""
         inp = self._joint_inputs.get(axis)
-        if not inp:
+        if inp is None:
             return
         try:
             val = float(inp.text())
@@ -831,20 +967,20 @@ class DualKukaRvizWindow(QMainWindow):
         self._refresh_table()
 
     # ===================================================================
-    # Auto tick / send hold
+    # Auto tick
     # ===================================================================
 
     def _auto_tick(self):
-        """Called by auto timer."""
+        """Called by auto timer to publish the current target."""
         if not self._model.all_targets_in_limits():
             return
+
         self._validate_and_send()
-        self._refresh_table()
 
     def _send_hold_tick(self):
-        """Re-send to keep command fresh in the bridge."""
+        """Re-send the current command to keep it fresh in the bridge."""
         self._send_hold_count += 1
-        if self._send_hold_count > 15:
+        if self._send_hold_count > 15:  # 15 * 200ms = 3 seconds max
             if self._send_hold_timer:
                 self._send_hold_timer.stop()
                 self._send_hold_timer = None
@@ -854,91 +990,31 @@ class DualKukaRvizWindow(QMainWindow):
         self._validate_and_send()
 
     # ===================================================================
-    # Refresh UI
-    # ===================================================================
-
-    def _refresh_inputs(self):
-        """Sync input fields with model."""
-        for axis in AXES:
-            val = self._model.get_target(axis)
-            self._joint_inputs[axis].setText(f'{val:.2f}')
-            # Color by limits
-            in_lim = self._model.is_in_limits(axis)
-            color = TEXT_PRI if in_lim else ERROR_CLR
-            self._joint_inputs[axis].setStyleSheet(
-                f'color: {color}; background-color: {PANEL_BG}; '
-                f'border: 1px solid {BORDER_CLR if in_lim else ERROR_CLR}; '
-                f'border-radius: 4px; padding: 4px 6px;'
-            )
-
-    def _refresh_table(self):
-        """Update the joint comparison table."""
-        for axis in AXES:
-            labels = self._table_labels.get(axis)
-            if not labels:
-                continue
-
-            target = self._model.get_target(axis)
-            labels['target'].setText(f'{target:.2f}')
-
-            # KUKA feedback
-            kuka_fb = self._model.get_feedback(axis)
-            if kuka_fb is not None:
-                labels['kuka_fb'].setText(f'{kuka_fb:.2f}')
-                labels['kuka_fb'].setStyleSheet(f'color: {ACCENT};')
-            else:
-                labels['kuka_fb'].setText('N/A')
-                labels['kuka_fb'].setStyleSheet(f'color: {TEXT_SEC};')
-
-            # RViz feedback
-            rviz_fb = self._model.get_rviz_feedback(axis)
-            if rviz_fb is not None:
-                labels['rviz_fb'].setText(f'{rviz_fb:.2f}')
-                labels['rviz_fb'].setStyleSheet(f'color: {RVIZ_CLR};')
-            else:
-                labels['rviz_fb'].setText('N/A')
-                labels['rviz_fb'].setStyleSheet(f'color: {TEXT_SEC};')
-
-            # Error KUKA
-            err_kuka = self._model.get_error(axis)
-            if err_kuka is not None:
-                color = ACCENT2 if abs(err_kuka) < 1.0 else WARN_CLR
-                labels['err_kuka'].setText(f'{err_kuka:.2f}')
-                labels['err_kuka'].setStyleSheet(f'color: {color};')
-            else:
-                labels['err_kuka'].setText('N/A')
-                labels['err_kuka'].setStyleSheet(f'color: {TEXT_SEC};')
-
-            # Error RViz
-            err_rviz = self._model.get_rviz_error(axis)
-            if err_rviz is not None:
-                color = ACCENT2 if abs(err_rviz) < 1.0 else WARN_CLR
-                labels['err_rviz'].setText(f'{err_rviz:.2f}')
-                labels['err_rviz'].setStyleSheet(f'color: {color};')
-            else:
-                labels['err_rviz'].setText('N/A')
-                labels['err_rviz'].setStyleSheet(f'color: {TEXT_SEC};')
-
-    # ===================================================================
     # Bridge signal handlers
     # ===================================================================
 
     @pyqtSlot(str)
-    def _on_kuka_feedback(self, data_str: str):
-        """Handle KUKA feedback JSON."""
+    def _on_feedback(self, data: str):
+        """Handle feedback JSON from bridge."""
         try:
-            data = json.loads(data_str)
+            fb = json.loads(data)
         except json.JSONDecodeError:
             return
 
-        self._model.update_feedback(data)
+        self._model.update_feedback(fb)
 
         # On first feedback, sync targets to robot's actual position
         if not self._synced_to_robot:
-            axis_actual = data.get('axis_actual', {})
+            axis_actual = fb.get('axis_actual', {})
+            pos_actual = fb.get('position_actual', {})
             synced = False
             for a in AXES:
                 val = axis_actual.get(a)
+                if val is not None:
+                    self._model.set_target(a, float(val))
+                    synced = True
+            for a in CARTESIAN_AXES:
+                val = pos_actual.get(a)
                 if val is not None:
                     self._model.set_target(a, float(val))
                     synced = True
@@ -946,103 +1022,103 @@ class DualKukaRvizWindow(QMainWindow):
                 self._synced_to_robot = True
                 self._refresh_inputs()
 
-        # Update KUKA status
-        move_ready = data.get('move_ready', False)
-        limits_ok = data.get('limits_ok', False)
-        safe_mode = data.get('bridge_safe_mode', True)
-        allow_motion = data.get('bridge_allow_motion', False)
-
-        self._lbl_kuka_status.setText(
-            f'Feedback activo | MoveReady={move_ready}'
-        )
-        self._lbl_kuka_status.setStyleSheet(f'color: {ACCENT2};')
-
-        safe_text = 'Bloqueado' if safe_mode else 'Permitido'
-        safe_color = ERROR_CLR if safe_mode else ACCENT2
-        self._lbl_safe.setText(f'{safe_text} (allow_motion={allow_motion})')
-        self._lbl_safe.setStyleSheet(f'color: {safe_color};')
-
         self._refresh_table()
 
-    @pyqtSlot(str)
-    def _on_raw_cmd_xml(self, xml_str: str):
-        """Handle raw command XML."""
-        if hasattr(self, '_txt_cmd_xml'):
-            self._txt_cmd_xml.setPlainText(xml_str)
+        # Update status indicators
+        self._lbl_kuka[1].setText('Feedback activo')
+        self._lbl_kuka[1].setStyleSheet(f'color: {ACCENT2}; font-weight: bold;')
+
+        self._lbl_bridge[1].setText('Conectado')
+        self._lbl_bridge[1].setStyleSheet(f'color: {ACCENT2}; font-weight: bold;')
+
+        # Check KUKA-side status flags
+        move_ready = fb.get('move_ready', False)
+        limits_ok = fb.get('limits_ok', False)
+        delta_ok = fb.get('delta_ok', False)
+        move_executed = fb.get('move_executed', False)
+
+        # Update safety status from bridge
+        safe_mode = fb.get('bridge_safe_mode', True)
+        allow_motion = fb.get('bridge_allow_motion', False)
+        if safe_mode or not allow_motion:
+            self._lbl_safety[1].setText('Bloqueado')
+            self._lbl_safety[1].setStyleSheet(f'color: {WARN_CLR}; font-weight: bold;')
+        else:
+            self._lbl_safety[1].setText('Permitido')
+            self._lbl_safety[1].setStyleSheet(f'color: {ACCENT2}; font-weight: bold;')
+
+        # Update feedback display
+        if self._show_raw_json and hasattr(self, '_txt_feedback'):
+            try:
+                pretty = json.dumps(fb, indent=2)
+                self._txt_feedback.setPlainText(pretty)
+            except Exception:
+                self._txt_feedback.setPlainText(data)
 
     @pyqtSlot(str)
-    def _on_raw_robot_xml(self, xml_str: str):
-        """Handle raw robot XML."""
-        if hasattr(self, '_txt_robot_xml'):
-            self._txt_robot_xml.setPlainText(xml_str)
+    def _on_raw_command_xml(self, data: str):
+        """Handle raw command XML from bridge."""
+        if self._show_raw_xml and hasattr(self, '_txt_cmd_xml'):
+            self._txt_cmd_xml.setPlainText(data)
+
+    @pyqtSlot(str)
+    def _on_raw_robot_xml(self, data: str):
+        """Handle raw robot XML from bridge (currently not displayed separately)."""
+        pass
 
     @pyqtSlot(bool)
     def _on_ros_status(self, active: bool):
         """Handle ROS2 status change."""
         if active:
-            self._lbl_ros.setText('Activo ✓')
-            self._lbl_ros.setStyleSheet(f'color: {ACCENT2}; font-weight: bold;')
+            self._lbl_ros[1].setText('Activo')
+            self._lbl_ros[1].setStyleSheet(f'color: {ACCENT2}; font-weight: bold;')
         else:
-            self._lbl_ros.setText('Inactivo')
-            self._lbl_ros.setStyleSheet(f'color: {ERROR_CLR};')
-
-    @pyqtSlot(str)
-    def _on_rviz_status(self, status: str):
-        """Handle MoveIt status."""
-        self._model.update_moveit_status(status)
-        self._lbl_moveit.setText(status)
-        self._lbl_moveit.setStyleSheet(f'color: {RVIZ_CLR};')
-
-    @pyqtSlot(str)
-    def _on_rviz_joint_state(self, json_str: str):
-        """Handle RViz joint state."""
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            return
-
-        self._model.update_rviz_feedback(data)
-
-        # Summary label
-        parts = [f'{a}={data.get(a, 0):.1f}' for a in AXES]
-        self._lbl_rviz_joints.setText(' '.join(parts))
-        self._lbl_rviz_joints.setStyleSheet(f'color: {RVIZ_CLR};')
-
-        self._refresh_table()
-
-    @pyqtSlot(str)
-    def _on_rviz_cart_state(self, json_str: str):
-        """Handle RViz cartesian state."""
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            return
-
-        self._model.update_cart_feedback(data)
-
-        parts = [f'{k}={data.get(k, 0):.3f}' for k in CART_KEYS]
-        self._lbl_rviz_cart.setText(' '.join(parts))
-        self._lbl_rviz_cart.setStyleSheet(f'color: {RVIZ_CLR};')
-
-        self._lbl_cart_last.setText(f'Último estado cartesiano RViz: {" ".join(parts)}')
+            self._lbl_ros[1].setText('Inactivo')
+            self._lbl_ros[1].setStyleSheet(f'color: {TEXT_SEC}; font-weight: bold;')
 
     # ===================================================================
     # Feedback timeout check
     # ===================================================================
 
     def _check_feedback_timeout(self):
-        """Check if KUKA and RViz feedback are stale."""
+        """Check if feedback is stale and update status."""
         if not self._model.has_recent_feedback(self._feedback_timeout):
-            self._lbl_kuka_status.setText('Sin feedback')
-            self._lbl_kuka_status.setStyleSheet(f'color: {TEXT_SEC};')
-
-        if not self._model.has_recent_rviz_feedback(self._feedback_timeout):
-            self._lbl_rviz_joints.setText('Sin datos')
-            self._lbl_rviz_joints.setStyleSheet(f'color: {TEXT_SEC};')
+            self._lbl_kuka[1].setText('Sin feedback')
+            self._lbl_kuka[1].setStyleSheet(f'color: {TEXT_SEC}; font-weight: bold;')
 
     # ===================================================================
     # Close event
     # ===================================================================
+
+    @pyqtSlot(str)
+    def _on_rviz_joint_state(self, data: str):
+        import json
+        try:
+            fb = json.loads(data)
+            self._model.update_rviz_feedback(fb)
+            self._refresh_table()
+        except json.JSONDecodeError:
+            pass
+
+    @pyqtSlot(str)
+    def _on_rviz_cartesian_state(self, data: str):
+        import json
+        try:
+            fb = json.loads(data)
+            # MoveIt Bridge returns meters for X,Y,Z. GUI expects millimeters.
+            if fb.get('X') is not None: fb['X'] *= 1000.0
+            if fb.get('Y') is not None: fb['Y'] *= 1000.0
+            if fb.get('Z') is not None: fb['Z'] *= 1000.0
+            
+            self._model.update_rviz_cartesian_feedback(fb)
+            self._refresh_table()
+        except json.JSONDecodeError:
+            pass
+
+    @pyqtSlot(str)
+    def _on_rviz_status(self, status: str):
+        self._model.update_moveit_status(status)
+        # Se podría mostrar el estado de MoveIt en un label si hiciera falta
 
     def closeEvent(self, event):
         """Clean shutdown on window close."""

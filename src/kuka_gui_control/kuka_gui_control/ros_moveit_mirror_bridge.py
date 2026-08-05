@@ -127,8 +127,9 @@ class RosMoveitMirrorBridge(QObject):
         msg.data = [float(v) for v in values]
         try:
             self._pub_joints.publish(msg)
-        except Exception:
-            pass
+            self._node.get_logger().info(f'[MoveIt Mirror] Published joint command: {values}')
+        except Exception as e:
+            self._node.get_logger().error(f'[MoveIt Mirror] Failed to publish joints: {e}')
 
     def publish_cartesian(self, values: List[float]) -> None:
         """
@@ -144,8 +145,9 @@ class RosMoveitMirrorBridge(QObject):
         msg.data = [float(v) for v in values]
         try:
             self._pub_cartesian.publish(msg)
-        except Exception:
-            pass
+            self._node.get_logger().info(f'[MoveIt Mirror] Published cartesian command: {values}')
+        except Exception as e:
+            self._node.get_logger().error(f'[MoveIt Mirror] Failed to publish cartesian: {e}')
 
     # ── Callbacks (ROS2 thread → Qt signals) ─────────────────────────
 
