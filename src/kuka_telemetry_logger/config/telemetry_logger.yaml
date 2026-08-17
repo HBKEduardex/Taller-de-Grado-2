@@ -1,0 +1,42 @@
+# telemetry_logger configuration for kuka_telemetry_logger
+#
+# PASSIVE logger. It only subscribes. It never publishes, never commands the
+# robot, and never touches the EthernetKRL socket.
+#
+# The defaults below were taken from the existing workspace, not guessed:
+#   publisher  : node `eki_axis_move`  (kuka_eki_bridge/eki_axis_move_node.py)
+#   GUI sub    : kuka_gui_control/ros_axis_move_bridge.py
+#   msg type   : std_msgs/msg/String   (payload is a JSON object)
+#   QoS        : rclpy default -> RELIABLE / VOLATILE / KEEP_LAST(10)
+
+kuka_telemetry_logger:
+  ros__parameters:
+
+    # ── Topic to observe (same one the GUI uses) ──────────────────────
+    telemetry_topic: "/kuka/axis_move/feedback_json"
+
+    # ── Optional archive of the raw <Robot> XML sent by the KUKA ──────
+    log_raw_robot_xml: true
+    raw_robot_xml_topic: "/kuka/axis_move/raw_robot_xml"
+
+    # ── Output ────────────────────────────────────────────────────────
+    # Relative paths resolve against the directory you launch from.
+    # Files created: <log_dir>/<file_prefix>_YYYYMMDD_HHMMSS.csv  and  .db
+    log_dir: "logs"
+    file_prefix: "kuka_telemetry"
+
+    # ── QoS depth (must stay compatible with the publisher) ───────────
+    qos_depth: 10
+
+    # ── Durability of the on-disk log ─────────────────────────────────
+    # Flush the CSV and commit the SQLite transaction every N messages,
+    # so a hard kill loses at most N rows.
+    flush_every: 20
+
+    # ── Console reporting ─────────────────────────────────────────────
+    # Print the compact diagnostics block every N messages.
+    report_every: 100
+
+    # Print every single message (very noisy). The --verbose command-line
+    # flag turns this on too.
+    verbose: false
