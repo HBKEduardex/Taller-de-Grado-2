@@ -76,6 +76,31 @@ DEF  SPS ( )
   FOR xd_tempI = 1 TO 64
     xd_tempMode[xd_tempI] = 0
   ENDFOR
+  ; Initialize EKI receive temporary variables
+  xd_tempSeq = 0
+  xd_tempEnableMove = FALSE
+
+  xd_tempA1 = 0.0
+  xd_tempA2 = 0.0
+  xd_tempA3 = 0.0
+  xd_tempA4 = 0.0
+  xd_tempA5 = 0.0
+  xd_tempA6 = 0.0
+
+  xd_tempX = 0.0
+  xd_tempY = 0.0
+  xd_tempZ = 0.0
+  xd_tempA = 0.0
+  xd_tempB = 0.0
+  xd_tempC = 0.0
+
+  xd_packetCounter = -1
+  xd_sentMoveSeq = -1
+
+  xd_packetOK = FALSE
+  xd_channelOK = FALSE
+  xd_sendOK = FALSE
+  xd_sendMoveExecuted = FALSE
 
   ;ENDFOLD (USER INIT)
   ;ENDFOLD (INI)
