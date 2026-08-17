@@ -1,0 +1,543 @@
+&ACCESS RV
+&REL 1
+&PARAM DISKPATH = KRC:\R1\Program
+&PARAM SensorITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF XmlDualMove( )
+
+;FOLD Declaration
+  INT i
+  INT seq
+  INT cmdSeq
+  INT lastMoveSeq
+
+  DECL EKI_STATUS RET
+  DECL AXIS axisTarget
+  DECL E6POS cartesianTarget
+
+  CHAR cmdMode[64]
+
+  BOOL isAxisMode
+  BOOL isCartesianMode
+
+  BOOL enableMove
+  BOOL limitsOK
+  BOOL readyToMove
+  BOOL moveExecuted
+  BOOL deltaOK
+  BOOL cmdReceived
+
+  REAL targetA1
+  REAL targetA2
+  REAL targetA3
+  REAL targetA4
+  REAL targetA5
+  REAL targetA6
+
+  REAL targetX
+  REAL targetY
+  REAL targetZ
+  REAL targetA
+  REAL targetB
+  REAL targetC
+
+  REAL errorA1
+  REAL errorA2
+  REAL errorA3
+  REAL errorA4
+  REAL errorA5
+  REAL errorA6
+
+  REAL errorX
+  REAL errorY
+  REAL errorZ
+  REAL errorA
+  REAL errorB
+  REAL errorC
+
+  REAL MAX_DELTA_JOINT
+  REAL MAX_DELTA_POS
+  REAL MAX_DELTA_ORI
+;ENDFOLD (Declaration)
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+
+  ;FOLD USER INI
+    ;Receives target from Ubuntu/ROS2 using EthernetKRL.
+    ;Supports BOTH Axis (A1-A6) and Cartesian (X,Y,Z,A,B,C) modes.
+    ;Movement block must be enabled only by the responsible operator.
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+;FOLD Initialize data
+  FOR i=(1) TO (64)
+    cmdMode[i]=0
+  ENDFOR
+
+  seq = 0
+  cmdSeq = 0
+  lastMoveSeq = -1
+
+  enableMove = FALSE
+  limitsOK = FALSE
+  readyToMove = FALSE
+  moveExecuted = FALSE
+  deltaOK = FALSE
+  cmdReceived = FALSE
+  isAxisMode = FALSE
+  isCartesianMode = FALSE
+
+  targetA1 = $AXIS_ACT.A1
+  targetA2 = $AXIS_ACT.A2
+  targetA3 = $AXIS_ACT.A3
+  targetA4 = $AXIS_ACT.A4
+  targetA5 = $AXIS_ACT.A5
+  targetA6 = $AXIS_ACT.A6
+
+  targetX = $POS_ACT.X
+  targetY = $POS_ACT.Y
+  targetZ = $POS_ACT.Z
+  targetA = $POS_ACT.A
+  targetB = $POS_ACT.B
+  targetC = $POS_ACT.C
+
+  errorA1 = 0.0
+  errorA2 = 0.0
+  errorA3 = 0.0
+  errorA4 = 0.0
+  errorA5 = 0.0
+  errorA6 = 0.0
+
+  errorX = 0.0
+  errorY = 0.0
+  errorZ = 0.0
+  errorA = 0.0
+  errorB = 0.0
+  errorC = 0.0
+
+  MAX_DELTA_JOINT = 10.0
+  MAX_DELTA_POS = 100.0  ; 100 mm jump max in X, Y, Z
+  MAX_DELTA_ORI = 20.0   ; 20 degrees jump max in A, B, C
+
+  axisTarget = $AXIS_ACT
+  cartesianTarget = $POS_ACT
+;ENDFOLD (Initialize data)
+
+;FOLD Configure motion parameters
+  $BWDSTART = FALSE
+  $OV_PRO = 5
+  
+  ; Default TOOL and BASE (modify if your setup requires specific ones)
+  $TOOL = $NULLFRAME
+  $BASE = $NULLFRAME
+;ENDFOLD (Configure motion parameters)
+
+RET=EKI_Init("XmlDualMove")
+RET=EKI_Open("XmlDualMove")
+
+; Submit channel state
+IF XD_USE_SUBMIT THEN
+  XD_EKI_ACTIVE = FALSE
+  XD_ENABLE_MOVE = FALSE
+  XD_MOVE_READY = FALSE
+  XD_CMD_RECEIVED = FALSE
+  XD_CMD_UPDATING = FALSE
+  XD_ROBOT_BUSY = FALSE
+  XD_DRAIN_REQUEST = FALSE
+  XD_DRAIN_DONE = FALSE
+  XD_LAST_DRAINED_SEQ = -1
+  XD_LAST_MOVE_SEQ = -1
+  XD_MOVE_EXECUTED = FALSE
+
+  ; EthernetKRL 3.0: EKI_Open defines Msg_No and Connected.
+  IF RET.Msg_No == 0 THEN
+    IF RET.Connected == TRUE THEN
+      XD_EKI_ACTIVE = TRUE
+    ENDIF
+  ENDIF
+ENDIF
+
+;FOLD Move command loop
+LOOP
+
+  seq = seq + 1
+
+  ;FOLD Receive target command from Ubuntu
+  IF NOT XD_USE_SUBMIT THEN
+    cmdReceived = FALSE
+    RET=EKI_CheckBuffer("XmlDualMove", "Command/Seq")
+    IF RET.Buff > 0 THEN
+      RET=EKI_GetInt("XmlDualMove","Command/Seq",cmdSeq)
+      RET=EKI_GetString("XmlDualMove","Command/Mode",cmdMode[])
+      RET=EKI_GetBool("XmlDualMove","Command/EnableMove",enableMove)
+
+      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A1",targetA1)
+      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A2",targetA2)
+      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A3",targetA3)
+      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A4",targetA4)
+      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A5",targetA5)
+      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A6",targetA6)
+
+      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@X",targetX)
+      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Y",targetY)
+      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Z",targetZ)
+      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@A",targetA)
+      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@B",targetB)
+      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@C",targetC)
+      
+      cmdReceived = TRUE
+      
+      ; Determine mode based on first char 'A' for AxisTarget, 'C' for CartesianTarget
+      isAxisMode = (cmdMode[1] == "A") OR (cmdMode[1] == "a")
+      isCartesianMode = (cmdMode[1] == "C") OR (cmdMode[1] == "c")
+    ENDIF
+  ENDIF
+
+  IF XD_USE_SUBMIT THEN
+    cmdReceived = FALSE
+    IF (XD_EKI_ACTIVE == TRUE) AND (XD_CMD_UPDATING == FALSE) AND (XD_CMD_RECEIVED == TRUE) THEN
+      cmdSeq = XD_CMD_SEQ
+      enableMove = XD_ENABLE_MOVE
+
+      targetA1 = XD_TARGET_A1
+      targetA2 = XD_TARGET_A2
+      targetA3 = XD_TARGET_A3
+      targetA4 = XD_TARGET_A4
+      targetA5 = XD_TARGET_A5
+      targetA6 = XD_TARGET_A6
+
+      targetX = XD_TARGET_X
+      targetY = XD_TARGET_Y
+      targetZ = XD_TARGET_Z
+      targetA = XD_TARGET_A
+      targetB = XD_TARGET_B
+      targetC = XD_TARGET_C
+
+      isAxisMode = XD_AXIS_MODE
+      isCartesianMode = XD_CART_MODE
+
+      cmdReceived = TRUE
+      XD_CMD_RECEIVED = FALSE
+    ENDIF
+  ENDIF
+  ;ENDFOLD (Receive target command from Ubuntu)
+
+  ;FOLD Calculate error target - actual
+    IF isAxisMode THEN
+      errorA1 = targetA1 - $AXIS_ACT.A1
+      errorA2 = targetA2 - $AXIS_ACT.A2
+      errorA3 = targetA3 - $AXIS_ACT.A3
+      errorA4 = targetA4 - $AXIS_ACT.A4
+      errorA5 = targetA5 - $AXIS_ACT.A5
+      errorA6 = targetA6 - $AXIS_ACT.A6
+    ENDIF
+    
+    IF isCartesianMode THEN
+      errorX = targetX - $POS_ACT.X
+      errorY = targetY - $POS_ACT.Y
+      errorZ = targetZ - $POS_ACT.Z
+      errorA = targetA - $POS_ACT.A
+      errorB = targetB - $POS_ACT.B
+      errorC = targetC - $POS_ACT.C
+    ENDIF
+  ;ENDFOLD (Calculate error target - actual)
+
+  ;FOLD Validate limits
+    limitsOK = TRUE
+
+    IF isAxisMode THEN
+      IF targetA1 < -160.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA1 > 160.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA2 < -180.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA2 > 35.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA3 < -110.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA3 > 146.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA4 < -175.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA4 > 175.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA5 < -110.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA5 > 110.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA6 < -340.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA6 > 340.0 THEN
+        limitsOK = FALSE
+      ENDIF
+    ENDIF
+    
+    ; Note: Cartesian limits are harder to define safely without a known workspace.
+    ; Native KUKA reachability will prevent unsafe poses, but you can add boundary boxes here if needed.
+  ;ENDFOLD (Validate limits)
+
+  IF XD_USE_SUBMIT THEN
+    XD_LIMITS_OK = limitsOK
+  ENDIF
+
+  ;FOLD Validate delta (max jump per command)
+    deltaOK = TRUE
+
+    IF isAxisMode THEN
+      IF (errorA1 > MAX_DELTA_JOINT) OR (errorA1 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA2 > MAX_DELTA_JOINT) OR (errorA2 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA3 > MAX_DELTA_JOINT) OR (errorA3 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA4 > MAX_DELTA_JOINT) OR (errorA4 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA5 > MAX_DELTA_JOINT) OR (errorA5 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA6 > MAX_DELTA_JOINT) OR (errorA6 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+    ENDIF
+
+    IF isCartesianMode THEN
+      IF (errorX > MAX_DELTA_POS) OR (errorX < -MAX_DELTA_POS) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorY > MAX_DELTA_POS) OR (errorY < -MAX_DELTA_POS) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorZ > MAX_DELTA_POS) OR (errorZ < -MAX_DELTA_POS) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA > MAX_DELTA_ORI) OR (errorA < -MAX_DELTA_ORI) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorB > MAX_DELTA_ORI) OR (errorB < -MAX_DELTA_ORI) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorC > MAX_DELTA_ORI) OR (errorC < -MAX_DELTA_ORI) THEN
+        deltaOK = FALSE
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Validate delta)
+
+  IF XD_USE_SUBMIT THEN
+    XD_DELTA_OK = deltaOK
+  ENDIF
+
+  ;FOLD Build target from GUI
+    IF isAxisMode THEN
+      axisTarget = $AXIS_ACT
+      axisTarget.A1 = targetA1
+      axisTarget.A2 = targetA2
+      axisTarget.A3 = targetA3
+      axisTarget.A4 = targetA4
+      axisTarget.A5 = targetA5
+      axisTarget.A6 = targetA6
+    ENDIF
+    
+    IF isCartesianMode THEN
+      cartesianTarget = $POS_ACT
+      cartesianTarget.X = targetX
+      cartesianTarget.Y = targetY
+      cartesianTarget.Z = targetZ
+      cartesianTarget.A = targetA
+      cartesianTarget.B = targetB
+      cartesianTarget.C = targetC
+    ENDIF
+  ;ENDFOLD (Build target from GUI)
+
+  ;FOLD Determine readyToMove
+    readyToMove = FALSE
+
+    IF enableMove == TRUE THEN
+      IF limitsOK == TRUE THEN
+        IF deltaOK == TRUE THEN
+          IF cmdReceived == TRUE THEN
+            readyToMove = TRUE
+          ENDIF
+        ENDIF
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Determine readyToMove)
+
+  IF XD_USE_SUBMIT THEN
+    IF XD_EKI_ACTIVE == FALSE THEN
+      readyToMove = FALSE
+    ENDIF
+    IF (isAxisMode == FALSE) AND (isCartesianMode == FALSE) THEN
+      readyToMove = FALSE
+    ENDIF
+    XD_MOVE_READY = readyToMove
+  ENDIF
+
+  ;FOLD Execute movement
+  IF NOT XD_USE_SUBMIT THEN
+    IF readyToMove == TRUE THEN
+      IF cmdSeq > 0 THEN
+        IF cmdSeq <> lastMoveSeq THEN
+          
+          ; Execute movement based on mode
+          IF isAxisMode THEN
+            PTP axisTarget
+          ENDIF
+          
+          IF isCartesianMode THEN
+            PTP cartesianTarget
+          ENDIF
+          
+          lastMoveSeq = cmdSeq
+          moveExecuted = TRUE
+
+          ; Drain stale commands that accumulated during movement
+          RET=EKI_CheckBuffer("XmlDualMove", "Command/Seq")
+          WHILE RET.Buff > 0
+            RET=EKI_GetInt("XmlDualMove","Command/Seq",cmdSeq)
+            RET=EKI_GetString("XmlDualMove","Command/Mode",cmdMode[])
+            RET=EKI_GetBool("XmlDualMove","Command/EnableMove",enableMove)
+            
+            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A1",targetA1)
+            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A2",targetA2)
+            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A3",targetA3)
+            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A4",targetA4)
+            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A5",targetA5)
+            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A6",targetA6)
+            
+            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@X",targetX)
+            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Y",targetY)
+            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Z",targetZ)
+            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@A",targetA)
+            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@B",targetB)
+            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@C",targetC)
+            
+            RET=EKI_CheckBuffer("XmlDualMove", "Command/Seq")
+          ENDWHILE
+          lastMoveSeq = cmdSeq
+
+        ENDIF
+      ENDIF
+    ELSE
+      moveExecuted = FALSE
+    ENDIF
+  ENDIF
+
+  IF XD_USE_SUBMIT THEN
+    IF readyToMove == TRUE THEN
+      IF cmdSeq > 0 THEN
+        IF cmdSeq <> lastMoveSeq THEN
+          IF XD_EKI_ACTIVE == TRUE THEN
+            WAIT SEC 0
+            XD_ROBOT_BUSY = TRUE
+            XD_LAST_DRAINED_SEQ = cmdSeq
+            XD_DRAIN_REQUEST = FALSE
+            XD_DRAIN_DONE = FALSE
+
+            WAIT FOR XD_CMD_UPDATING == FALSE
+            IF XD_CMD_RECEIVED == TRUE THEN
+              XD_LAST_DRAINED_SEQ = XD_CMD_SEQ
+              XD_CMD_RECEIVED = FALSE
+            ENDIF
+
+            IF XD_EKI_ACTIVE == TRUE THEN
+              IF isAxisMode THEN
+                PTP axisTarget
+              ENDIF
+
+              IF isCartesianMode THEN
+                PTP cartesianTarget
+              ENDIF
+
+              WAIT SEC 0
+              lastMoveSeq = cmdSeq
+              moveExecuted = TRUE
+              XD_LAST_MOVE_SEQ = cmdSeq
+              XD_MOVE_EXECUTED = TRUE
+
+              XD_DRAIN_REQUEST = TRUE
+              WAIT FOR (XD_DRAIN_DONE == TRUE) OR (XD_EKI_ACTIVE == FALSE)
+              IF XD_DRAIN_DONE == TRUE THEN
+                lastMoveSeq = XD_LAST_DRAINED_SEQ
+              ENDIF
+            ENDIF
+
+            XD_DRAIN_REQUEST = FALSE
+            XD_ROBOT_BUSY = FALSE
+            XD_DRAIN_DONE = FALSE
+          ENDIF
+        ENDIF
+      ENDIF
+    ELSE
+      moveExecuted = FALSE
+    ENDIF
+  ENDIF
+
+  ;ENDFOLD (Execute movement)
+
+  ;FOLD Send actual robot position to Ubuntu
+  IF NOT XD_USE_SUBMIT THEN
+    RET=EKI_SetInt("XmlDualMove","Robot/Seq",seq)
+    
+    IF isCartesianMode THEN
+      RET=EKI_SetString("XmlDualMove","Robot/Mode","CartesianTarget")
+    ELSE
+      RET=EKI_SetString("XmlDualMove","Robot/Mode","AxisTarget")
+    ENDIF
+
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A1",$AXIS_ACT.A1)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A2",$AXIS_ACT.A2)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A3",$AXIS_ACT.A3)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A4",$AXIS_ACT.A4)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A5",$AXIS_ACT.A5)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A6",$AXIS_ACT.A6)
+
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@X",$POS_ACT.X)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@Y",$POS_ACT.Y)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@Z",$POS_ACT.Z)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@A",$POS_ACT.A)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@B",$POS_ACT.B)
+    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@C",$POS_ACT.C)
+
+    RET=EKI_SetInt("XmlDualMove","Robot/Status",1)
+    RET=EKI_SetBool("XmlDualMove","Robot/MoveReady",readyToMove)
+    RET=EKI_SetBool("XmlDualMove","Robot/LimitsOK",limitsOK)
+    RET=EKI_SetBool("XmlDualMove","Robot/DeltaOK",deltaOK)
+    RET=EKI_SetBool("XmlDualMove","Robot/MoveExecuted",moveExecuted)
+
+    RET=EKI_Send("XmlDualMove","Robot")
+  ENDIF
+  ;ENDFOLD (Send actual robot position to Ubuntu)
+
+  WAIT SEC 0.1
+
+ENDLOOP
+;ENDFOLD (Move command loop)
+
+; Submit channel closing
+IF XD_USE_SUBMIT THEN
+  XD_EKI_ACTIVE = FALSE
+ENDIF
+
+RET=EKI_Close("XmlDualMove")
+RET=EKI_Clear("XmlDualMove")
+
+END
