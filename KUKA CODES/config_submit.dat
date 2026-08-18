@@ -839,7 +839,7 @@ DECL BOOL XD_MOVE_EXECUTED = FALSE
 ; --- Telemetry send frequency ---
 ; XD_SEND_DIVISOR: send telemetry every N SPS cycles (~12ms/cycle, N=8 gives approx 10Hz)
 ; NOTE: SPS cycle time is NOT hard real-time; actual frequency is approximate.
-DECL INT XD_SEND_DIVISOR = 8
+DECL INT XD_SEND_DIVISOR = 4
 ; Counter for cycle divisor (internal, incremented by SPS.SUB)
 DECL INT XD_SEND_COUNTER = 0
 
