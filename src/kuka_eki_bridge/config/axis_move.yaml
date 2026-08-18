@@ -61,3 +61,12 @@ eki_axis_move:
     require_seq_positive: true
     reject_repeated_seq: true
     command_timeout_sec: 2.0
+
+    # ── Command pacing ─────────────────────────────────────────────────
+    # Only answer a <Robot> frame with a <Command> when the GUI actually
+    # asked for something new (or when EnableMove would be 1). Otherwise
+    # repeat the last valid command at this period.
+    # Each suppressed reply saves the KUKA SPS one full 15 x EKI_Get read,
+    # which is what was capping telemetry at ~6 Hz.
+    # Set to 0.0 to restore the previous "reply to every frame" behaviour.
+    command_heartbeat_period_sec: 0.5

@@ -21,6 +21,22 @@ Multi-layer safety:
   6. Seq must be new (if reject_repeated_seq)
   7. Command timeout (stale commands get EnableMove=0)
 
+Command pacing (telemetry optimisation):
+  The KUKA SPS runs ~15 EKI_Get calls every time it finds a <Command> in its
+  receive buffer, and that read is roughly half of the telemetry period. So a
+  <Command> is only put on the wire when it actually carries something new:
+
+    - the GUI requested a different command  -> sent immediately
+    - EnableMove would be 1                  -> sent immediately (never withheld)
+    - otherwise                              -> repeated once per
+                                                command_heartbeat_period_sec
+
+  Set command_heartbeat_period_sec to 0.0 to restore the previous behaviour of
+  replying to every single <Robot> frame.
+
+  Telemetry itself is NOT throttled: every <Robot> frame is still parsed and
+  still published to the feedback topic, one for one.
+
 This node does NOT modify any existing node.
 
 Usage:
@@ -30,6 +46,7 @@ Usage:
 import json
 import time
 import threading
+from typing import Optional
 
 import rclpy
 from rclpy.node import Node
@@ -104,6 +121,10 @@ class EkiAxisMoveNode(Node):
         self.declare_parameter('reject_repeated_seq', True)
         self.declare_parameter('command_timeout_sec', 2.0)
 
+        # Command pacing — see the module docstring. Default 0.5 s (~2 Hz).
+        # 0.0 restores the legacy "reply to every <Robot> frame" behaviour.
+        self.declare_parameter('command_heartbeat_period_sec', 0.5)
+
         # ── Read parameters ──────────────────────────────────────────
         self._host = self.get_parameter('bind_host').get_parameter_value().string_value
         self._port = self.get_parameter('port').get_parameter_value().integer_value
@@ -150,6 +171,8 @@ class EkiAxisMoveNode(Node):
         self._require_seq_positive = self.get_parameter('require_seq_positive').get_parameter_value().bool_value
         self._reject_repeated_seq = self.get_parameter('reject_repeated_seq').get_parameter_value().bool_value
         self._command_timeout = self.get_parameter('command_timeout_sec').get_parameter_value().double_value
+        self._heartbeat_period = self.get_parameter(
+            'command_heartbeat_period_sec').get_parameter_value().double_value
 
         # ── Internal state ───────────────────────────────────────────
         self._target_lock = threading.Lock()
@@ -160,6 +183,11 @@ class EkiAxisMoveNode(Node):
         self._last_cmd_seq: int = 0
         self._last_sent_seq: int = -1
         self._last_cmd_time: float = 0.0
+
+        # Command pacing state. Touched only from the TCP server thread,
+        # same as _last_sent_seq, so it needs no extra lock.
+        self._last_command_signature: Optional[tuple] = None
+        self._last_command_send_time: float = 0.0
 
         # Latest feedback from KUKA (for delta validation)
         self._feedback_lock = threading.Lock()
@@ -180,6 +208,9 @@ class EkiAxisMoveNode(Node):
             ' '.join(f'{a}={v:.1f}' for a, v in self._default_target.items()))
         self.get_logger().info('  Max delta: ' +
             ' '.join(f'{a}={v:.1f}' for a, v in self._max_delta.items()))
+        self.get_logger().info(
+            f'  Command heartbeat:      {self._heartbeat_period:.3f} s'
+            + ('  (0 = reply to every frame)' if self._heartbeat_period <= 0.0 else ''))
         self.get_logger().info('──────────────────────────────────────────────')
 
         # ── Publishers ───────────────────────────────────────────────
@@ -355,12 +386,16 @@ class EkiAxisMoveNode(Node):
 
     # ── Command provider (called from TCP thread) ────────────────────
 
-    def _build_command(self, parsed_feedback: dict) -> str:
+    def _build_command(self, parsed_feedback: dict) -> Optional[str]:
         """
         Build the <Command> XML to send back to the KUKA.
 
         Called from the TCP server thread with the parsed feedback dict.
         Applies all validation layers before allowing EnableMove=1.
+
+        Returns None when this frame does not need a reply, which the TCP
+        server already treats as "send nothing" — the socket stays open and
+        the KUKA never waits for a reply, since EKI_Send is fire-and-forget.
         """
         with self._target_lock:
             target_snap = dict(self._last_valid_target)
@@ -374,6 +409,11 @@ class EkiAxisMoveNode(Node):
         with self._feedback_lock:
             feedback_actual = dict(self._last_feedback_actual)
             feedback_pos = dict(self._last_feedback_pos)
+
+        # Signature of what the GUI is asking for right now. Compared further
+        # down to decide whether this <Robot> frame earns a <Command> reply.
+        signature = self._command_signature(
+            cmd_seq, mode_snap, enable_move_snap, target_snap, cart_snap)
 
         # ── Validation layers ────────────────────────────────────────
         effective_enable = enable_move_snap
@@ -447,15 +487,51 @@ class EkiAxisMoveNode(Node):
                     reasons.append(f'{a} delta={delta:.2f}>{self._max_delta_ori:.1f}')
                     break
 
+        # ── Send decision ────────────────────────────────────────────
+        # Every reply we skip saves the KUKA SPS one full 15 x EKI_Get read,
+        # which is what caps telemetry at ~6 Hz. Nothing is skipped that
+        # carries new information or that would enable motion.
+        now = time.monotonic()
+        is_new_command = signature != self._last_command_signature
+        heartbeat_due = (
+            now - self._last_command_send_time) >= self._heartbeat_period
+
+        if is_new_command:
+            send_reason = 'new_command'
+        elif effective_enable:
+            # A frame that would put EnableMove=1 on the wire is never
+            # withheld, not even for a few milliseconds.
+            send_reason = 'enable_move'
+        elif heartbeat_due:
+            send_reason = 'heartbeat'
+        else:
+            send_reason = None
+
+        if send_reason is None:
+            self.get_logger().debug(
+                f'[COMMAND SUPPRESSED] seq={cmd_seq} '
+                f'since_last_send={now - self._last_command_send_time:.3f}s'
+            )
+            self._log_cycle(parsed_feedback, target_snap, effective_enable)
+            return None
+
         # Track sent seq
         if effective_enable:
             self._last_sent_seq = cmd_seq
         else:
             # Log WHY EnableMove is blocked
-            self.get_logger().warn(
+            blocked_msg = (
                 f'[ENABLE BLOCKED] seq={cmd_seq} enable_snap={enable_move_snap} '
                 f'cmd_time={cmd_time:.1f} reasons={reasons}'
             )
+            if is_new_command:
+                self.get_logger().warn(blocked_msg)
+            else:
+                # A heartbeat repeats an already-sent seq on purpose, so
+                # reject_repeated_seq forcing EnableMove=0 is the designed
+                # outcome here — not an anomaly worth warning about twice a
+                # second.
+                self.get_logger().debug(blocked_msg)
 
         # ── Build XML ────────────────────────────────────────────────
         xml = build_axis_move_command_xml(
@@ -473,27 +549,76 @@ class EkiAxisMoveNode(Node):
         cmd_msg.data = xml
         self._pub_raw_cmd.publish(cmd_msg)
 
-        # ── Compact log ──────────────────────────────────────────────
-        if self._log_feedback:
-            fb_seq = parsed_feedback.get('seq', 0)
-            fb_mode = parsed_feedback.get('mode', 'Unknown')
-            fb_actual = parsed_feedback.get('axis_actual', {})
-            fb_limits_ok = parsed_feedback.get('limits_ok', False)
-            fb_delta_ok = parsed_feedback.get('delta_ok', False)
+        self._last_command_signature = signature
+        self._last_command_send_time = now
+        self.get_logger().debug(
+            f'[COMMAND SEND] reason={send_reason} seq={cmd_seq} '
+            f'enable={1 if effective_enable else 0}'
+        )
 
-            line = format_axis_move_log(
-                seq=fb_seq,
-                mode=fb_mode,
-                actual=fb_actual,
-                target=target_snap,
-                limits_ok=fb_limits_ok,
-                delta_ok=fb_delta_ok,
-                enable_move=1 if effective_enable else 0,
-                safe_mode=self._safe_mode,
-            )
-            self.get_logger().info(line)
+        # ── Compact log ──────────────────────────────────────────────
+        self._log_cycle(parsed_feedback, target_snap, effective_enable)
 
         return xml
+
+    # ── Helpers ──────────────────────────────────────────────────────
+
+    def _command_signature(
+        self,
+        seq: int,
+        mode: str,
+        enable_move: bool,
+        target: dict,
+        cartesian: dict,
+    ) -> tuple:
+        """
+        Build a comparable signature of the command the GUI is requesting.
+
+        Values are rounded to 4 decimals because build_axis_move_command_xml()
+        formats them with '%.4f'. Two snapshots with the same signature would
+        therefore produce a byte-identical <Command>, which makes "nothing
+        changed" exact rather than approximate.
+
+        Seq is part of the signature on purpose: joint_command_model.next_seq()
+        bumps it on every GUI publish, so a fresh seq is the GUI explicitly
+        asking for the command to be delivered again.
+        """
+        return (
+            int(seq),
+            str(mode),
+            bool(enable_move),
+            tuple(round(float(target.get(a, 0.0)), 4) for a in _AXES),
+            tuple(round(float(cartesian.get(a, 0.0)), 4)
+                  for a in _CARTESIAN_AXES),
+        )
+
+    def _log_cycle(
+        self,
+        parsed_feedback: dict,
+        target_snap: dict,
+        effective_enable: bool,
+    ) -> None:
+        """
+        Emit the per-cycle compact log line.
+
+        Unchanged content and level, and still emitted once per received
+        <Robot> frame whether or not a <Command> went out, so the console
+        keeps showing the real telemetry rate.
+        """
+        if not self._log_feedback:
+            return
+
+        line = format_axis_move_log(
+            seq=parsed_feedback.get('seq', 0),
+            mode=parsed_feedback.get('mode', 'Unknown'),
+            actual=parsed_feedback.get('axis_actual', {}),
+            target=target_snap,
+            limits_ok=parsed_feedback.get('limits_ok', False),
+            delta_ok=parsed_feedback.get('delta_ok', False),
+            enable_move=1 if effective_enable else 0,
+            safe_mode=self._safe_mode,
+        )
+        self.get_logger().info(line)
 
     # ── Cleanup ──────────────────────────────────────────────────────
 
