@@ -21,22 +21,26 @@ AXES: List[str] = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
 CARTESIAN_AXES: List[str] = ['X', 'Y', 'Z', 'A', 'B', 'C']
 
+# HOME articular: [0, -90, 90, 0, 90, 0] grados
 DEFAULT_HOME: Dict[str, float] = {
     'A1': 0.0,
     'A2': -90.0,
     'A3': 90.0,
     'A4': 0.0,
-    'A5': 0.0,
+    'A5': 90.0,
     'A6': 0.0,
 }
 
+# HOME cartesiano correspondiente: [445, 0, 810] mm, [180, 0, 180] grados.
+# X, Y, Z en MILÍMETROS dentro de la GUI (se convierten a metros al publicar
+# hacia RViz/MoveIt2).
 DEFAULT_CARTESIAN_HOME: Dict[str, float] = {
-    'X': 400.0,
+    'X': 445.0,
     'Y': 0.0,
-    'Z': 600.0,
-    'A': 0.0,
-    'B': 90.0,
-    'C': 0.0,
+    'Z': 810.0,
+    'A': 180.0,
+    'B': 0.0,
+    'C': 180.0,
 }
 
 DEFAULT_LIMITS: Dict[str, Tuple[float, float]] = {
@@ -71,9 +75,12 @@ class JointCommandModel:
         limits: Optional[Dict[str, Tuple[float, float]]] = None,
         enable_move_default: bool = True,
         step_deg: float = 1.0,
+        cartesian_home: Optional[Dict[str, float]] = None,
     ):
         self._home: Dict[str, float] = home or dict(DEFAULT_HOME)
-        self._cartesian_home: Dict[str, float] = dict(DEFAULT_CARTESIAN_HOME)
+        self._cartesian_home: Dict[str, float] = (
+            cartesian_home or dict(DEFAULT_CARTESIAN_HOME)
+        )
         self._limits: Dict[str, Tuple[float, float]] = limits or dict(DEFAULT_LIMITS)
         self._step_deg: float = step_deg
         self._step_mm: float = 1.0
@@ -123,8 +130,9 @@ class JointCommandModel:
         return dict(self._target)
 
     def load_home(self) -> None:
-        """Reset all targets to home position."""
+        """Reset all targets (articulares Y cartesianos) a la posición HOME."""
         self._target = dict(self._home)
+        self._target_cartesian = dict(self._cartesian_home)
 
     def step_target(self, axis: str, direction: int) -> float:
         """
@@ -311,6 +319,12 @@ class JointCommandModel:
 
     def set_home(self, home: Dict[str, float]) -> None:
         self._home = dict(home)
+
+    def get_cartesian_home(self) -> Dict[str, float]:
+        return dict(self._cartesian_home)
+
+    def set_cartesian_home(self, home: Dict[str, float]) -> None:
+        self._cartesian_home = dict(home)
 
     @property
     def step_deg(self) -> float:

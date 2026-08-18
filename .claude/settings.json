@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import xml.dom.minidom as m; m.parse\\('config/fastdds_udp_only.xml'\\); print\\('OK xml'\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(sudo -n true)",
+      "Read(//proc/15978/**)"
+    ]
+  }
+}

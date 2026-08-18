@@ -33,7 +33,6 @@ except ImportError as e:
 
 from kuka_gui_control.dual_command_model import DualCommandModel
 from kuka_gui_control.joint_command_model import AXES, CARTESIAN_AXES
-from std_msgs.msg import Float64MultiArray
 
 # ---------------------------------------------------------------------------
 # Style constants
@@ -240,6 +239,11 @@ class DualKukaRvizWindow(QMainWindow):
         self._enable_move_confirmed = False
         self._synced_to_robot = False
 
+        # Último objetivo publicado hacia RViz/MoveIt2 (para deduplicar los
+        # reenvíos automáticos; un SEND explícito publica siempre).
+        self._last_rviz_joints = None
+        self._last_rviz_cartesian = None
+
         # Config values
         self._auto_hz = config.get('auto_publish_hz', 2.0)
         self._feedback_timeout = config.get('feedback_timeout_sec', 2.0)
@@ -273,28 +277,13 @@ class DualKukaRvizWindow(QMainWindow):
         self._rviz_bridge.rviz_joint_state_received.connect(self._on_rviz_joint_state)
         self._rviz_bridge.rviz_cartesian_state_received.connect(self._on_rviz_cartesian_state)
         self._rviz_bridge.rviz_status_received.connect(self._on_rviz_status)
-        
-        # ── Publishers hacia RViz ────────────────────────────────────────
-        import rclpy
-        from rclpy.node import Node
-        from std_msgs.msg import Float64MultiArray
-        
-        # Crear un nodo independiente solo para publicar a RViz
-        self._rviz_pub_node = Node('kuka_dual_gui_rviz_publisher')
-        
-        self._rviz_joint_command_topic = "/kuka_bridge/joint_command_deg"
-        self._rviz_cartesian_command_topic = "/kuka_bridge/cartesian_command_deg"
-        
-        self._rviz_joint_pub = self._rviz_pub_node.create_publisher(
-            Float64MultiArray,
-            self._rviz_joint_command_topic,
-            10
-        )
-        self._rviz_cartesian_pub = self._rviz_pub_node.create_publisher(
-            Float64MultiArray,
-            self._rviz_cartesian_command_topic,
-            10
-        )
+
+        # NOTA: los comandos hacia RViz/MoveIt2 se publican SIEMPRE a través de
+        # self._rviz_bridge, que crea sus publishers sobre el nodo rclpy que sí
+        # está dentro del executor. Antes se creaba aquí un segundo nodo
+        # ('kuka_dual_gui_rviz_publisher') que nunca se spineaba y que, por el
+        # remap '-r __node:=kuka_gui_dual_node' del launch, acababa con el mismo
+        # nombre que el nodo principal (dos nodos homónimos en el grafo).
 
         # ── Feedback timeout timer ───────────────────────────────────
         self._feedback_timer = QTimer(self)
@@ -373,6 +362,19 @@ class DualKukaRvizWindow(QMainWindow):
         self._lbl_safety = self._make_status_label('Seguridad:', 'safe_mode activo', WARN_CLR)
         status_layout.addWidget(self._lbl_safety[0], 1, 2)
         status_layout.addWidget(self._lbl_safety[1], 1, 3)
+
+        self._lbl_rviz = self._make_status_label('RViz/MoveIt:', 'Sin estado', TEXT_SEC)
+        status_layout.addWidget(self._lbl_rviz[0], 2, 0)
+        status_layout.addWidget(self._lbl_rviz[1], 2, 1)
+
+        # Última respuesta del bridge de MoveIt (READY, BUSY, ALREADY_AT_TARGET,
+        # WAITING_FOR_ROBOT_STATE, REJECTED_JOINT_LIMIT, ...). Sin esto no hay
+        # forma de saber por qué un SEND no produce movimiento en RViz.
+        self._lbl_moveit_status = QLabel('—')
+        self._lbl_moveit_status.setStyleSheet(
+            f'color: {TEXT_SEC}; font-family: monospace; font-size: 11px;'
+        )
+        status_layout.addWidget(self._lbl_moveit_status, 2, 2, 1, 2)
 
         main_layout.addWidget(status_group)
 
@@ -712,6 +714,28 @@ class DualKukaRvizWindow(QMainWindow):
                 self._table_labels[axis]['error'].setText('N/A')
                 self._table_labels[axis]['error'].setStyleSheet(f'color: {TEXT_SEC};')
 
+            # Columnas "RViz fb" y "Err RViz" (solo existen en la tabla de ejes)
+            labels = self._table_labels[axis]
+            if 'rviz_feedback' not in labels:
+                continue
+
+            rviz_fb = self._model.get_rviz_feedback(axis)
+            if rviz_fb is not None:
+                labels['rviz_feedback'].setText(f'{rviz_fb:.2f}')
+                labels['rviz_feedback'].setStyleSheet(f'color: {TEXT_PRI};')
+            else:
+                labels['rviz_feedback'].setText('N/A')
+                labels['rviz_feedback'].setStyleSheet(f'color: {TEXT_SEC};')
+
+            rviz_err = self._model.get_rviz_error(axis)
+            if rviz_err is not None:
+                labels['error_rviz'].setText(f'{rviz_err:.2f}')
+                clr = WARN_CLR if abs(rviz_err) > 1.0 else TEXT_PRI
+                labels['error_rviz'].setStyleSheet(f'color: {clr};')
+            else:
+                labels['error_rviz'].setText('N/A')
+                labels['error_rviz'].setStyleSheet(f'color: {TEXT_SEC};')
+
     def _refresh_inputs(self):
         """Refresh all input fields from the model and check limits."""
         all_ok = True
@@ -734,41 +758,47 @@ class DualKukaRvizWindow(QMainWindow):
 
         self._btn_send.setEnabled(all_ok)
 
-    def send_joint_command(self):
-        """Publica el comando articular a KUKA TCP/IP y a RViz."""
+    def send_joint_command(self, force: bool = False):
+        """
+        Publica el comando articular a KUKA TCP/IP y a RViz.
+
+        Args:
+            force: True cuando el envío viene de una pulsación explícita de
+                   SEND/HOME. En ese caso se publica aunque el valor sea
+                   idéntico al anterior.
+        """
         target_json = self._model.build_target_json()
-        
+
         # TCP/IP KUKA real
         if self._model.publish_joints_to_kuka:
             self._kuka_bridge.publish_command(target_json)
-            
+
         # RViz / MoveIt2
         if self._model.publish_joints_to_rviz:
             arr = self._model.build_rviz_joint_array()
-            
-            # Deduplicación para no congelar MoveIt si se mantiene presionado SEND
-            if not hasattr(self, '_last_rviz_joints') or self._last_rviz_joints != arr:
-                from std_msgs.msg import Float64MultiArray
-                msg = Float64MultiArray()
-                msg.data = [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3]), float(arr[4]), float(arr[5])]
-                self._rviz_joint_pub.publish(msg)
-                
-                self._rviz_pub_node.get_logger().info(
-                    f"CMD RVIZ JOINT → A1={arr[0]} A2={arr[1]} A3={arr[2]} A4={arr[3]} A5={arr[4]} A6={arr[5]}"
-                )
+
+            # Deduplicación: evita saturar MoveIt con el mismo objetivo durante
+            # los reenvíos automáticos (hold / AUTO). Una pulsación explícita de
+            # SEND siempre publica, porque el bridge pudo haber descartado el
+            # comando anterior (WAITING_FOR_ROBOT_STATE, BUSY, etc.).
+            if force or getattr(self, '_last_rviz_joints', None) != arr:
+                self._rviz_bridge.publish_joints(arr)
                 self._last_rviz_joints = list(arr)
-                
+
         # Update UI JSON viewer
         if self._show_raw_json and hasattr(self, '_txt_command'):
             try:
-                import json
                 pretty = json.dumps(json.loads(target_json), indent=2)
                 self._txt_command.setPlainText(pretty)
             except Exception:
                 self._txt_command.setPlainText(target_json)
 
-    def send_cartesian_command(self):
-        """Publica el comando cartesiano a RViz (y opcionalmente a KUKA)."""
+    def send_cartesian_command(self, force: bool = False):
+        """
+        Publica el comando cartesiano a RViz (y opcionalmente a KUKA).
+
+        La GUI trabaja en milímetros; MoveIt2 espera metros para X, Y, Z.
+        """
         # RViz / MoveIt2
         if self._model.publish_cartesian_to_rviz:
             arr = self._model.build_cartesian_array()
@@ -776,45 +806,37 @@ class DualKukaRvizWindow(QMainWindow):
             arr[0] /= 1000.0
             arr[1] /= 1000.0
             arr[2] /= 1000.0
-            
-            if not hasattr(self, '_last_rviz_cartesian') or self._last_rviz_cartesian != arr:
-                from std_msgs.msg import Float64MultiArray
-                msg = Float64MultiArray()
-                msg.data = [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3]), float(arr[4]), float(arr[5])]
-                self._rviz_cartesian_pub.publish(msg)
-                
-                self._rviz_pub_node.get_logger().info(
-                    f"CMD RVIZ CARTESIAN → X={arr[0]} Y={arr[1]} Z={arr[2]} A={arr[3]} B={arr[4]} C={arr[5]}"
-                )
+
+            if force or getattr(self, '_last_rviz_cartesian', None) != arr:
+                self._rviz_bridge.publish_cartesian(arr)
                 self._last_rviz_cartesian = list(arr)
-                
+
         # TCP/IP KUKA real
         if self._model.publish_cartesian_to_kuka:
             target_json = self._model.build_target_json()
             self._kuka_bridge.publish_command(target_json)
-            
+
         # Update UI JSON viewer
         if self._show_raw_json and hasattr(self, '_txt_command'):
             if not self._model.publish_cartesian_to_kuka:
                 target_json = self._model.build_target_json()
             try:
-                import json
                 pretty = json.dumps(json.loads(target_json), indent=2)
                 self._txt_command.setPlainText(pretty)
             except Exception:
                 self._txt_command.setPlainText(target_json)
 
-    def _validate_and_send(self):
+    def _validate_and_send(self, force: bool = False):
         """Called by SEND button or auto timer."""
         if not self._model.all_targets_in_limits():
             return
 
         mode = self._model.get_target_mode()
-        
+
         if mode == 'AxisTarget' or mode == 'joints':
-            self.send_joint_command()
+            self.send_joint_command(force=force)
         elif mode == 'CartesianTarget' or mode == 'cartesian':
-            self.send_cartesian_command()
+            self.send_cartesian_command(force=force)
 
     # ===================================================================
     # Button handlers
@@ -825,7 +847,7 @@ class DualKukaRvizWindow(QMainWindow):
         self._stack.setCurrentIndex(1)
 
     def _on_home(self):
-        """Load home position values (publish only if auto is running)."""
+        """Cargar la posición HOME (articular y cartesiana) en los targets."""
         self._model.load_home()
         self._refresh_inputs()
         self._refresh_table()
@@ -852,7 +874,9 @@ class DualKukaRvizWindow(QMainWindow):
             self._first_send_confirmed = True
 
         self._model.set_node_mode('manual_send')
-        self._validate_and_send()
+        # force=True: una pulsación de SEND siempre publica, incluso si el
+        # objetivo no cambió desde el envío anterior.
+        self._validate_and_send(force=True)
         self._refresh_table()
 
         # Hold: keep re-sending for ~3 seconds so the bridge doesn't
@@ -902,6 +926,10 @@ class DualKukaRvizWindow(QMainWindow):
         """Reset GUI to home position, clear errors."""
         self._model.load_home()
         self._model.clear_feedback()
+        # Olvidar el último objetivo enviado para que el siguiente SEND
+        # vuelva a publicar aunque coincida con el anterior.
+        self._last_rviz_joints = None
+        self._last_rviz_cartesian = None
         self._refresh_inputs()
         self._refresh_table()
 
@@ -1117,8 +1145,34 @@ class DualKukaRvizWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_rviz_status(self, status: str):
+        """Mostrar la última respuesta del bridge de MoveIt2 en la barra de estado."""
         self._model.update_moveit_status(status)
-        # Se podría mostrar el estado de MoveIt en un label si hiciera falta
+
+        if status.startswith(('SUCCESS', 'READY', 'RECEIVED_', 'ALREADY_AT_TARGET')):
+            clr = ACCENT2
+            conn = 'Conectado'
+        elif status.startswith(('WAITING_', 'ROBOT_STATE_STALE', 'BUSY',
+                                'TF_UNAVAILABLE')):
+            clr = WARN_CLR
+            conn = 'Esperando'
+        elif status.startswith(('REJECTED', 'IK_', 'PLANNING_FAILED', 'ERROR',
+                                'INVALID')):
+            clr = ERROR_CLR
+            conn = 'Rechazado'
+        else:
+            clr = TEXT_PRI
+            conn = 'Conectado'
+
+        self._lbl_rviz[1].setText(conn)
+        self._lbl_rviz[1].setStyleSheet(f'color: {clr}; font-weight: bold;')
+
+        # Recortar para que no rompa el layout con mensajes largos
+        shown = status if len(status) <= 90 else status[:87] + '...'
+        self._lbl_moveit_status.setText(shown)
+        self._lbl_moveit_status.setToolTip(status)
+        self._lbl_moveit_status.setStyleSheet(
+            f'color: {clr}; font-family: monospace; font-size: 11px;'
+        )
 
     def closeEvent(self, event):
         """Clean shutdown on window close."""

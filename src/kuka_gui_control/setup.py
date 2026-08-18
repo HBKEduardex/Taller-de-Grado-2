@@ -15,8 +15,9 @@ setup(
             ['resource/' + package_name]),
         # Package manifest
         ('share/' + package_name, ['package.xml']),
-        # Config files
-        ('share/' + package_name + '/config', glob('config/*.yaml')),
+        # Config files (YAML de parámetros + perfiles Fast DDS)
+        ('share/' + package_name + '/config',
+            glob('config/*.yaml') + glob('config/*.xml')),
         # Launch files
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],

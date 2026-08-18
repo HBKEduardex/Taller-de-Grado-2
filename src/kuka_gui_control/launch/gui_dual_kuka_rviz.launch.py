@@ -18,7 +18,9 @@ from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     LogInfo,
+    SetEnvironmentVariable,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -35,6 +37,14 @@ def generate_launch_description():
     allow_motion_arg = DeclareLaunchArgument(
         'allow_motion_commands', default_value='false',
         description='Allow motion commands through the bridge'
+    )
+    force_udp_arg = DeclareLaunchArgument(
+        'force_udp_dds', default_value='true',
+        description=(
+            'Desactiva el transporte SHM de Fast DDS y deja solo UDPv4. '
+            'Necesario para que los comandos lleguen al bridge de MoveIt2 '
+            'que corre como root dentro del contenedor Docker.'
+        )
     )
 
     # ── kuka_eki_bridge — axis_move ──────────────────────────────────
@@ -78,6 +88,21 @@ def generate_launch_description():
         gui_share, 'config', 'gui_dual_kuka_rviz.yaml'
     )
 
+    # ── Fast DDS: solo UDPv4 (sin memoria compartida) ────────────────
+    # La GUI corre en el host como uid 1000 y el bridge de MoveIt2 corre
+    # como root dentro del contenedor. Comparten /dev/shm (--ipc=host),
+    # pero los segmentos SHM del contenedor son root:root 0644, así que
+    # la GUI no puede escribir en ellos y los mensajes se pierden en
+    # silencio (el tópico se ve, los datos no llegan).
+    fastdds_profile = os.path.join(
+        gui_share, 'config', 'fastdds_udp_only.xml'
+    )
+    set_fastdds_profile = SetEnvironmentVariable(
+        name='FASTRTPS_DEFAULT_PROFILES_FILE',
+        value=fastdds_profile,
+        condition=IfCondition(LaunchConfiguration('force_udp_dds')),
+    )
+
     gui_node = Node(
         package='kuka_gui_control',
         executable='gui_dual_node',
@@ -90,6 +115,9 @@ def generate_launch_description():
     return LaunchDescription([
         safe_mode_arg,
         allow_motion_arg,
+        force_udp_arg,
+        set_fastdds_profile,
+        LogInfo(msg=f'Fast DDS profile (UDP only): {fastdds_profile}'),
         LogInfo(msg='Starting axis_move bridge (kuka_eki_bridge)...'),
         include_bridge,
         LogInfo(msg='Starting Dual GUI (KUKA + RViz)...'),

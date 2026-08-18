@@ -30,6 +30,8 @@ except ImportError as e:
 
 from kuka_gui_control.joint_command_model import (
     AXES,
+    CARTESIAN_AXES,
+    DEFAULT_CARTESIAN_HOME,
     DEFAULT_HOME,
     DEFAULT_LIMITS,
 )
@@ -73,6 +75,7 @@ DEFAULT_CONFIG = {
 
     # ── Home / limits ────────────────────────────────────────────────
     'home_joints_deg':        dict(DEFAULT_HOME),
+    'home_cartesian':         dict(DEFAULT_CARTESIAN_HOME),
     'soft_limits_deg': {
         a: list(DEFAULT_LIMITS[a]) for a in AXES
     },
@@ -82,6 +85,107 @@ DEFAULT_CONFIG = {
     'show_raw_json':          True,
     'show_raw_xml':           True,
 }
+
+
+# ---------------------------------------------------------------------------
+# Lectura de parámetros ROS2
+# ---------------------------------------------------------------------------
+
+# Parámetros escalares: nombre en el YAML → clave en cfg
+_SCALAR_PARAMS = {
+    # RViz / MoveIt2 topics
+    'rviz_joint_command_topic':     'rviz_joint_command_topic',
+    'rviz_cartesian_command_topic': 'rviz_cartesian_command_topic',
+    'rviz_status_topic':            'rviz_status_topic',
+    'rviz_joint_state_topic':       'rviz_joint_state_topic',
+    'rviz_cartesian_state_topic':   'rviz_cartesian_state_topic',
+
+    # Publishing behaviour
+    'auto_publish_hz':                     'auto_publish_hz',
+    'step_deg':                            'step_deg',
+    'enable_move_default':                 'enable_move_default',
+    'require_confirmation_for_first_send': 'require_confirmation_for_first_send',
+    'allow_auto_mode':                     'allow_auto_mode',
+    'allow_auto_motion':                   'allow_auto_motion',
+    'publish_joints_to_kuka':              'publish_joints_to_kuka',
+    'publish_joints_to_rviz':              'publish_joints_to_rviz',
+    'publish_cartesian_to_kuka':           'publish_cartesian_to_kuka',
+    'publish_cartesian_to_rviz':           'publish_cartesian_to_rviz',
+
+    # UI options
+    'feedback_timeout_sec': 'feedback_timeout_sec',
+    'show_raw_json':        'show_raw_json',
+    'show_raw_xml':         'show_raw_xml',
+}
+
+
+def load_config_from_node(node, cfg: dict) -> dict:
+    """
+    Sobreescribir `cfg` con los parámetros ROS2 declarados en el nodo.
+
+    Hasta ahora el launch pasaba `parameters=[gui_dual_kuka_rviz.yaml]` pero
+    nadie leía esos valores, así que el YAML no tenía ningún efecto.
+
+    Los tópicos TCP/IP hacia el KUKA real NO se leen aquí a propósito: se
+    crean en el constructor del bridge, antes de que exista el nodo, y no
+    deben tocarse.
+    """
+    log = node.get_logger()
+
+    for param_name, cfg_key in _SCALAR_PARAMS.items():
+        default = cfg[cfg_key]
+        try:
+            node.declare_parameter(param_name, default)
+            cfg[cfg_key] = node.get_parameter(param_name).value
+        except Exception as e:
+            log.warn(f'No se pudo leer el parámetro "{param_name}": {e}')
+
+    # Home articular: home_joints_deg.A1 ... .A6 (grados)
+    home = dict(cfg['home_joints_deg'])
+    for axis in AXES:
+        name = f'home_joints_deg.{axis}'
+        try:
+            node.declare_parameter(name, float(home[axis]))
+            home[axis] = float(node.get_parameter(name).value)
+        except Exception as e:
+            log.warn(f'No se pudo leer el parámetro "{name}": {e}')
+    cfg['home_joints_deg'] = home
+
+    # Home cartesiano: home_cartesian.X ... .C (X, Y, Z en mm; A, B, C en grados)
+    cart_home = dict(cfg['home_cartesian'])
+    for key in CARTESIAN_AXES:
+        name = f'home_cartesian.{key}'
+        try:
+            node.declare_parameter(name, float(cart_home[key]))
+            cart_home[key] = float(node.get_parameter(name).value)
+        except Exception as e:
+            log.warn(f'No se pudo leer el parámetro "{name}": {e}')
+    cfg['home_cartesian'] = cart_home
+
+    # Límites blandos: soft_limits_deg.A1 = [min, max]
+    limits = {a: list(cfg['soft_limits_deg'][a]) for a in AXES}
+    for axis in AXES:
+        name = f'soft_limits_deg.{axis}'
+        try:
+            node.declare_parameter(name, [float(v) for v in limits[axis]])
+            value = node.get_parameter(name).value
+            if value is not None and len(value) == 2:
+                limits[axis] = [float(value[0]), float(value[1])]
+        except Exception as e:
+            log.warn(f'No se pudo leer el parámetro "{name}": {e}')
+    cfg['soft_limits_deg'] = limits
+
+    log.info(
+        'Configuración cargada:\n'
+        f'  HOME articular  : '
+        f'{[round(cfg["home_joints_deg"][a], 3) for a in AXES]} deg\n'
+        f'  HOME cartesiano : '
+        f'{[round(cfg["home_cartesian"][k], 3) for k in CARTESIAN_AXES]} '
+        f'(X,Y,Z en mm; A,B,C en deg)\n'
+        f'  Comando joints  → {cfg["rviz_joint_command_topic"]}\n'
+        f'  Comando cart.   → {cfg["rviz_cartesian_command_topic"]}'
+    )
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +220,17 @@ def main(args=None):
         raw_robot_xml_topic=cfg['raw_feedback_xml_topic'],
     )
 
+    # ── Start KUKA bridge ────────────────────────────────────────────
+    kuka_bridge.start()
+
+    # ── Configuración desde el YAML del launch ───────────────────────
+    # Debe hacerse después de start() porque el nodo rclpy nace ahí, y antes
+    # de construir el modelo y el bridge de RViz, que consumen estos valores.
+    cfg = load_config_from_node(kuka_bridge._node, cfg)
+
     # ── Data model ───────────────────────────────────────────────────
     home = cfg.get('home_joints_deg', dict(DEFAULT_HOME))
+    cartesian_home = cfg.get('home_cartesian', dict(DEFAULT_CARTESIAN_HOME))
     limits_raw = cfg.get('soft_limits_deg', {})
     limits = {
         a: tuple(limits_raw.get(a, DEFAULT_LIMITS[a]))
@@ -126,6 +239,7 @@ def main(args=None):
 
     model = DualCommandModel(
         home=home,
+        cartesian_home=cartesian_home,
         limits=limits,
         enable_move_default=cfg.get('enable_move_default', False),
         step_deg=cfg.get('step_deg', 1.0),
@@ -134,14 +248,6 @@ def main(args=None):
         publish_cartesian_to_kuka=cfg.get('publish_cartesian_to_kuka', False),
         publish_cartesian_to_rviz=cfg.get('publish_cartesian_to_rviz', True),
     )
-
-    # ── Main window (created BEFORE bridge.start) ────────────────────
-    # RViz bridge will be created after kuka_bridge starts (needs node)
-    # Use a placeholder; we'll set the real one after start.
-    window = None
-
-    # ── Start KUKA bridge ────────────────────────────────────────────
-    kuka_bridge.start()
 
     # ── RViz bridge (reuses the KUKA bridge's rclpy node) ────────────
     rviz_bridge = RosMoveitMirrorBridge(

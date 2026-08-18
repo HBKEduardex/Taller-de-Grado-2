@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  fastdds_udp_only.xml
+
+  Perfil Fast DDS que desactiva el transporte de memoria compartida (SHM)
+  y deja solo UDPv4.
+
+  ¿Por qué hace falta?
+
+  El bridge de MoveIt2 corre dentro del contenedor Docker como usuario root
+  y la GUI corre en el host como usuario 'eduardex' (uid 1000). El contenedor
+  se lanzó con la opción "ipc=host", así que ambos comparten el MISMO
+  /dev/shm.
+
+  Fast DDS crea un segmento de memoria compartida por cada suscriptor, con
+  los permisos del proceso que lo crea (root, modo 0644). Para entregar un
+  mensaje, el publicador debe ESCRIBIR en el segmento del suscriptor:
+
+      root     hacia uid 1000 : funciona (root ignora permisos)
+      uid 1000 hacia root     : FALLA en silencio (0644 = solo lectura)
+
+  El descubrimiento va por UDP multicast, así que los tópicos SÍ aparecen en
+  'ros2 topic list' y 'ros2 topic echo' del host los ve; pero los datos nunca
+  llegan al nodo del contenedor. Ese es exactamente el síntoma de "doy SEND,
+  el tópico tiene datos, pero RViz no se mueve".
+
+  Forzando UDPv4 en el proceso de la GUI se evita el segmento SHM y los
+  mensajes llegan al contenedor. Solo hace falta configurarlo de este lado:
+  el suscriptor del contenedor anuncia locators SHM y UDP, y este
+  participante elegirá el UDP porque es el único transporte que tiene.
+
+  No afecta en absoluto al TCP/IP hacia el KUKA real (EthernetKRL, puerto
+  59153): eso son sockets propios, no DDS.
+-->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>gui_udp_transport</transport_id>
+        <type>UDPv4</type>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="gui_udp_only_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>gui_udp_transport</transport_id>
+        </userTransports>
+        <!-- false = no añadir SHM ni el UDP por defecto -->
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>

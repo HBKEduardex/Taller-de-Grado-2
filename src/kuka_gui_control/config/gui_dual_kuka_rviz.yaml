@@ -33,14 +33,24 @@ kuka_gui_dual_node:
     publish_cartesian_to_kuka: true
     publish_cartesian_to_rviz: true
 
-    # ── Home position ─────────────────────────────────────────────────
+    # ── Home articular [0, -90, 90, 0, 90, 0] deg ─────────────────────
     home_joints_deg:
       A1: 0.0
       A2: -90.0
       A3: 90.0
       A4: 0.0
-      A5: 0.0
+      A5: 90.0
       A6: 0.0
+
+    # ── Home cartesiano [445, 0, 810] mm, [180, 0, 180] deg ───────────
+    # X, Y, Z en MILÍMETROS (la GUI convierte a metros al publicar a MoveIt2).
+    home_cartesian:
+      X: 445.0
+      Y: 0.0
+      Z: 810.0
+      A: 180.0
+      B: 0.0
+      C: 180.0
 
     # ── Soft limits [min_deg, max_deg] per joint ──────────────────────
     soft_limits_deg:

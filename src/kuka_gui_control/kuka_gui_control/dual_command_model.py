@@ -44,12 +44,14 @@ class DualCommandModel(JointCommandModel):
         publish_joints_to_rviz: bool = True,
         publish_cartesian_to_kuka: bool = False,
         publish_cartesian_to_rviz: bool = True,
+        cartesian_home: Optional[Dict[str, float]] = None,
     ):
         super().__init__(
             home=home,
             limits=limits,
             enable_move_default=enable_move_default,
             step_deg=step_deg,
+            cartesian_home=cartesian_home,
         )
 
         # ── Dual publishing flags ────────────────────────────────────
