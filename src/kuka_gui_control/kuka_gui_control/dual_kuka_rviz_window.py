@@ -1109,10 +1109,15 @@ class DualKukaRvizWindow(QMainWindow):
         if inp is None:
             return
         try:
-            val = float(inp.text())
-            if val != self._model.get_target(axis):
+            previous = self._model.get_target(axis)
+            # Normaliza A, B y C a (-180, 180]: escribir 181 deja -179.
+            val = self._model.set_target_from_input(axis, float(inp.text()))
+            if val != previous:
                 self._targets_dirty = True
-            self._model.set_target(axis, val)
+            # editingFinished también salta al pulsar Enter, y en ese caso la
+            # caja conserva el foco, así que _refresh_inputs() no la tocaría.
+            # Se reescribe aquí para que se vea el valor ya normalizado.
+            inp.setText(f'{val:.2f}')
         except ValueError:
             pass
         self._refresh_inputs()

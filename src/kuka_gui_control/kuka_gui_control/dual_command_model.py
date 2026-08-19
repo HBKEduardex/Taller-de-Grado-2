@@ -159,6 +159,38 @@ class DualCommandModel(JointCommandModel):
             return False
         return (time.monotonic() - self._last_status_time) < timeout_sec
 
+    # ── Ángulos cartesianos A, B, C con envolvente ±180 ──────────────
+
+    def step_target(self, axis: str, direction: int) -> float:
+        """
+        Igual que el modelo base, pero A, B y C dan la vuelta en ±180.
+
+        Es el comportamiento del smartPad del KRC: no existe 181°, subir
+        desde 180 lleva a -179. Solo aplica a la orientación cartesiana;
+        los ejes A1-A6 conservan su recorrido completo (A6 va de -340 a 340)
+        y siguen limitados por los soft limits.
+        """
+        new_val = super().step_target(axis, direction)
+        if axis in CARTESIAN_ORIENTATION_KEYS:
+            new_val = wrap_deg_180(new_val)
+            self.set_target(axis, new_val)
+        return new_val
+
+    def set_target_from_input(self, axis: str, value: float) -> float:
+        """
+        Fijar un target escrito a mano, normalizando A, B y C a (-180, 180].
+
+        Se usa solo en la ruta de edición manual: el seguimiento de la
+        posición real llama a set_target() directamente, porque el KUKA ya
+        reporta la orientación dentro de rango.
+
+        Devuelve el valor que quedó almacenado, que es el que debe mostrarse.
+        """
+        if axis in CARTESIAN_ORIENTATION_KEYS:
+            value = wrap_deg_180(value)
+        self.set_target(axis, value)
+        return value
+
     # ── Build arrays for publishing ──────────────────────────────────
 
     def build_rviz_joint_array(self) -> List[float]:

@@ -6,7 +6,8 @@
       "Bash(sudo -n true)",
       "Read(//proc/15978/**)",
       "Bash(sed -n '/<CONFIGURATION>/,/<\\\\/CONFIGURATION>/p' config/XmlDualMove.xml)",
-      "Bash(sed -n '/<SEND>/,/<\\\\/SEND>/p' config/XmlDualMove.xml)"
+      "Bash(sed -n '/<SEND>/,/<\\\\/SEND>/p' config/XmlDualMove.xml)",
+      "Bash(python3 -)"
     ]
   }
 }
