@@ -4,7 +4,9 @@
       "Bash(python3 -c \"import xml.dom.minidom as m; m.parse\\('config/fastdds_udp_only.xml'\\); print\\('OK xml'\\)\")",
       "Bash(python3 -c ' *)",
       "Bash(sudo -n true)",
-      "Read(//proc/15978/**)"
+      "Read(//proc/15978/**)",
+      "Bash(sed -n '/<CONFIGURATION>/,/<\\\\/CONFIGURATION>/p' config/XmlDualMove.xml)",
+      "Bash(sed -n '/<SEND>/,/<\\\\/SEND>/p' config/XmlDualMove.xml)"
     ]
   }
 }

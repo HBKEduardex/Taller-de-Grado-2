@@ -237,7 +237,18 @@ class DualKukaRvizWindow(QMainWindow):
         self._send_hold_count = 0
         self._first_send_confirmed = False
         self._enable_move_confirmed = False
-        self._synced_to_robot = False
+
+        # ── Seguimiento de la posición real del KUKA ─────────────────
+        # En REPOSO los targets siguen continuamente a lo que reporta el robot
+        # (axis_actual / position_actual), igual que el sincronizado inicial de
+        # la GUI original pero sin quedarse en un único disparo.
+        #
+        # "Reposo" = el usuario no tiene cambios sin enviar, no está editando
+        # un campo, no corre AUTO y no está activo el hold de SEND. Fuera de
+        # reposo el seguimiento se suspende para no pisar lo que el operador
+        # acaba de escribir ni luchar con los reenvíos.
+        self._targets_dirty = False
+        self._last_feedback: Optional[dict] = None
 
         # Último objetivo publicado hacia RViz/MoveIt2 (para deduplicar los
         # reenvíos automáticos; un SEND explícito publica siempre).
@@ -631,6 +642,12 @@ class DualKukaRvizWindow(QMainWindow):
         enable_layout.addWidget(self._lbl_enable_status)
         enable_layout.addStretch()
 
+        # Estado del seguimiento: deja ver de un vistazo si las cajas están
+        # siguiendo al robot o congeladas porque hay una edición sin enviar.
+        self._lbl_tracking = QLabel('targets: sin feedback del KUKA')
+        self._lbl_tracking.setStyleSheet(f'color: {TEXT_SEC}; font-size: 12px;')
+        enable_layout.addWidget(self._lbl_tracking)
+
         main_layout.addLayout(enable_layout)
 
         # ── Info panels ──────────────────────────────────────────────
@@ -688,8 +705,94 @@ class DualKukaRvizWindow(QMainWindow):
             self._model.set_target_mode('AxisTarget')
         else:
             self._model.set_target_mode('CartesianTarget')
+
+        # Cambiar de modo equivale a empezar de nuevo: los targets parten de
+        # donde está el robot ahora mismo, tanto en ejes como en cartesiano.
+        if (self._last_feedback is not None
+                and self._model.has_recent_feedback(self._feedback_timeout)
+                and not self._auto_running
+                and self._send_hold_timer is None):
+            self._targets_dirty = False
+            self._sync_targets_from_feedback(self._last_feedback)
+
         self._refresh_inputs()
-        
+        self._update_tracking_label()
+
+    # ── Seguimiento de la posición real ──────────────────────────────
+
+    def _inputs_have_focus(self) -> bool:
+        """True si el operador tiene el cursor dentro de alguna caja."""
+        return any(inp.hasFocus() for inp in self._joint_inputs.values())
+
+    def _is_tracking_robot(self) -> bool:
+        """
+        True si los targets deben seguir a la posición real del KUKA.
+
+        Solo en reposo: sin ediciones pendientes, sin foco en una caja, sin
+        AUTO corriendo y sin el hold de SEND activo.
+        """
+        return (
+            not self._targets_dirty
+            and not self._auto_running
+            and self._send_hold_timer is None
+            and not self._inputs_have_focus()
+        )
+
+    def _sync_targets_from_feedback(self, fb: dict) -> bool:
+        """
+        Copiar la posición real del robot a los targets.
+
+        Ejes y cartesiano se tratan por separado a propósito: si una trama
+        trajera solo una de las dos familias, la otra no debe darse por
+        sincronizada (ese era el fallo del bloque de un solo disparo).
+
+        Devuelve True si algún valor cambió a la resolución que se muestra
+        (2 decimales), para no repintar las cajas 9 veces por segundo cuando
+        el robot está quieto.
+        """
+        axis_actual = fb.get('axis_actual') or {}
+        pos_actual = fb.get('position_actual') or {}
+
+        changed = False
+        for key in AXES:
+            val = axis_actual.get(key)
+            if val is None:
+                continue
+            val = float(val)
+            if round(self._model.get_target(key), 2) != round(val, 2):
+                changed = True
+            self._model.set_target(key, val)
+
+        for key in CARTESIAN_AXES:
+            val = pos_actual.get(key)
+            if val is None:
+                continue
+            val = float(val)
+            if round(self._model.get_target(key), 2) != round(val, 2):
+                changed = True
+            self._model.set_target(key, val)
+
+        if changed:
+            self._refresh_inputs()
+        return changed
+
+    def _update_tracking_label(self):
+        """Indicar si las cajas siguen al robot o están editadas a mano."""
+        if not self._model.has_recent_feedback(self._feedback_timeout):
+            text, clr = 'targets: sin feedback del KUKA', TEXT_SEC
+        elif self._is_tracking_robot():
+            text, clr = 'targets: siguiendo al robot', ACCENT2
+        elif self._targets_dirty:
+            text, clr = 'targets: editados (SEND para reanudar)', WARN_CLR
+        else:
+            text, clr = 'targets: en pausa', TEXT_SEC
+        # Se llama a la tasa del feedback (7-9 Hz): repintar solo si cambió.
+        if text == self._lbl_tracking.text():
+            return
+        self._lbl_tracking.setText(text)
+        self._lbl_tracking.setStyleSheet(f'color: {clr}; font-size: 12px;')
+
+
     def _refresh_table(self):
         """Refresh all table labels from the model."""
         for axis in AXES + CARTESIAN_AXES:
@@ -742,7 +845,11 @@ class DualKukaRvizWindow(QMainWindow):
         for axis in AXES + CARTESIAN_AXES:
             val = self._model.get_target(axis)
             inp = self._joint_inputs[axis]
-            inp.setText(f'{val:.2f}')
+            # Nunca reescribir la caja que el operador tiene bajo el cursor:
+            # con el seguimiento activo esto se llama varias veces por segundo
+            # y le borraría el número a medio teclear.
+            if not inp.hasFocus():
+                inp.setText(f'{val:.2f}')
 
             if self._model.is_in_limits(axis):
                 inp.setStyleSheet(
@@ -849,8 +956,13 @@ class DualKukaRvizWindow(QMainWindow):
     def _on_home(self):
         """Cargar la posición HOME (articular y cartesiana) en los targets."""
         self._model.load_home()
+        # HOME es una orden deliberada del operador: se suspende el seguimiento
+        # para que los valores no se vuelvan a sobrescribir con la posición real
+        # antes de poder enviarlos.
+        self._targets_dirty = True
         self._refresh_inputs()
         self._refresh_table()
+        self._update_tracking_label()
         if self._auto_running:
             pass  # Auto timer will publish on next tick
 
@@ -910,6 +1022,7 @@ class DualKukaRvizWindow(QMainWindow):
 
         self._btn_auto.setEnabled(False)
         self._btn_stop_auto.setEnabled(True)
+        self._update_tracking_label()
 
     def _on_stop_auto(self):
         """Stop automatic publishing."""
@@ -919,8 +1032,12 @@ class DualKukaRvizWindow(QMainWindow):
         self._auto_running = False
         self._model.set_node_mode('manual_send')
 
+        # Al salir de AUTO la GUI vuelve a reposo: se reanuda el seguimiento.
+        self._targets_dirty = False
+
         self._btn_auto.setEnabled(True)
         self._btn_stop_auto.setEnabled(False)
+        self._update_tracking_label()
 
     def _on_reset(self):
         """Reset GUI to home position, clear errors."""
@@ -930,8 +1047,11 @@ class DualKukaRvizWindow(QMainWindow):
         # vuelva a publicar aunque coincida con el anterior.
         self._last_rviz_joints = None
         self._last_rviz_cartesian = None
+        # Igual que HOME: carga deliberada, el seguimiento queda suspendido.
+        self._targets_dirty = True
         self._refresh_inputs()
         self._refresh_table()
+        self._update_tracking_label()
 
         if self._show_raw_json and hasattr(self, '_txt_feedback'):
             self._txt_feedback.clear()
@@ -978,8 +1098,10 @@ class DualKukaRvizWindow(QMainWindow):
     def _on_step(self, axis: str, direction: int):
         """Increment or decrement a joint target."""
         self._model.step_target(axis, direction)
+        self._targets_dirty = True
         self._refresh_inputs()
         self._refresh_table()
+        self._update_tracking_label()
 
     def _on_input_changed(self, axis: str):
         """Handle manual edit of a joint input field."""
@@ -988,11 +1110,14 @@ class DualKukaRvizWindow(QMainWindow):
             return
         try:
             val = float(inp.text())
+            if val != self._model.get_target(axis):
+                self._targets_dirty = True
             self._model.set_target(axis, val)
         except ValueError:
             pass
         self._refresh_inputs()
         self._refresh_table()
+        self._update_tracking_label()
 
     # ===================================================================
     # Auto tick
@@ -1012,6 +1137,10 @@ class DualKukaRvizWindow(QMainWindow):
             if self._send_hold_timer:
                 self._send_hold_timer.stop()
                 self._send_hold_timer = None
+            # El comando ya salió: se reanuda el seguimiento y los targets
+            # convergen a la posición donde el robot termine el movimiento.
+            self._targets_dirty = False
+            self._update_tracking_label()
             return
         if not self._model.all_targets_in_limits():
             return
@@ -1030,27 +1159,17 @@ class DualKukaRvizWindow(QMainWindow):
             return
 
         self._model.update_feedback(fb)
+        self._last_feedback = fb
 
-        # On first feedback, sync targets to robot's actual position
-        if not self._synced_to_robot:
-            axis_actual = fb.get('axis_actual', {})
-            pos_actual = fb.get('position_actual', {})
-            synced = False
-            for a in AXES:
-                val = axis_actual.get(a)
-                if val is not None:
-                    self._model.set_target(a, float(val))
-                    synced = True
-            for a in CARTESIAN_AXES:
-                val = pos_actual.get(a)
-                if val is not None:
-                    self._model.set_target(a, float(val))
-                    synced = True
-            if synced:
-                self._synced_to_robot = True
-                self._refresh_inputs()
+        # Seguir continuamente la posición real del robot mientras la GUI esté
+        # en reposo. Sustituye al sincronizado de un solo disparo, que dejaba
+        # los targets congelados en la foto del instante de conexión y no se
+        # recuperaba ni al reconectar el TCP/IP ni al cambiar de pestaña.
+        if self._is_tracking_robot():
+            self._sync_targets_from_feedback(fb)
 
         self._refresh_table()
+        self._update_tracking_label()
 
         # Update status indicators
         self._lbl_kuka[1].setText('Feedback activo')
@@ -1113,6 +1232,7 @@ class DualKukaRvizWindow(QMainWindow):
         if not self._model.has_recent_feedback(self._feedback_timeout):
             self._lbl_kuka[1].setText('Sin feedback')
             self._lbl_kuka[1].setStyleSheet(f'color: {TEXT_SEC}; font-weight: bold;')
+            self._update_tracking_label()
 
     # ===================================================================
     # Close event

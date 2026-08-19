@@ -21,6 +21,18 @@ AXES: List[str] = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
 CARTESIAN_AXES: List[str] = ['X', 'Y', 'Z', 'A', 'B', 'C']
 
+# Componentes angulares de la pose cartesiana. El KUKA las reporta en
+# (-180, 180], así que +180 y -180 son la MISMA orientación: la resta cruda
+# daría 360 de error. Solo aplica al cartesiano — los ejes A1-A6 tienen
+# recorridos mayores de una vuelta (A6 va de -340 a 340) y no se envuelven.
+CARTESIAN_ORIENTATION_KEYS: List[str] = ['A', 'B', 'C']
+
+
+def wrap_deg_180(value: float) -> float:
+    """Normalizar un ángulo en grados al rango (-180, 180]."""
+    wrapped = (value + 180.0) % 360.0 - 180.0
+    return 180.0 if wrapped == -180.0 else wrapped
+
 # HOME articular: [0, -90, 90, 0, 90, 0] grados
 DEFAULT_HOME: Dict[str, float] = {
     'A1': 0.0,
@@ -239,6 +251,9 @@ class JointCommandModel:
 
         if fb is None:
             return None
+
+        if axis in CARTESIAN_ORIENTATION_KEYS:
+            return wrap_deg_180(target - fb)
         return target - fb
 
     def has_recent_feedback(self, timeout_sec: float = 2.0) -> bool:

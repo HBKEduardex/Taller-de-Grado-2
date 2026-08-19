@@ -17,8 +17,10 @@ from kuka_gui_control.joint_command_model import (
     JointCommandModel,
     AXES,
     CARTESIAN_AXES,
+    CARTESIAN_ORIENTATION_KEYS,
     DEFAULT_HOME,
     DEFAULT_LIMITS,
+    wrap_deg_180,
 )
 
 
@@ -129,7 +131,10 @@ class DualCommandModel(JointCommandModel):
         fb = self._rviz_cart_feedback.get(key)
         if fb is None:
             return None
-        return self.get_target(key) - fb
+        error = self.get_target(key) - fb
+        if key in CARTESIAN_ORIENTATION_KEYS:
+            return wrap_deg_180(error)
+        return error
 
     def has_recent_cart_feedback(self, timeout_sec: float = 2.0) -> bool:
         """Return True if cartesian feedback was received within timeout_sec."""
