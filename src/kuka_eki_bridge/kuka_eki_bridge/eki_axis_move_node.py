@@ -37,6 +37,41 @@ Command pacing (telemetry optimisation):
   Telemetry itself is NOT throttled: every <Robot> frame is still parsed and
   still published to the feedback topic, one for one.
 
+EKI receive-buffer guard:
+  EthernetKRL does not discard old elements when its receive memory fills up —
+  it CLOSES the TCP connection (KST Ethernet KRL 3.0, p. 97-98: "Se ha cerrado
+  la conexion Ethernet para evitar la recepcion de mas datos"). The default
+  limit is 16 elements per memory, and XmlDualMove.xml declares no <INTERNAL>
+  block, so that default applies.
+
+  The SPS only reads its receive buffer while XD_CMD_RECEIVED is FALSE. When
+  the KRL program stops consuming, commands pile up and the link dies. This
+  has already happened: several telemetry logs end abruptly after exactly 16
+  consecutive rounds in which the SPS skipped its read block.
+
+  So the node keeps a deliberately conservative estimate of how many commands
+  the KUKA has not read yet, and stops sending well before the limit:
+
+    +1  every <Command> actually written to the socket   (a certainty)
+    -1  every frame whose inter-arrival time says the SPS ran its read block
+     0  whenever the KUKA (re)connects — the buffers die with the connection
+
+  Detection errors are biased towards safety: a missed read keeps the estimate
+  too high, which only makes the node send less.
+
+  Since the KUKA now publishes Robot/RxCounter — the SPS's own count of
+  complete commands taken out of the buffer — the estimate is driven by that
+  explicit acknowledgement instead of by timing. The timing heuristic is kept
+  only as a fallback for a controller that has not been updated yet, so the
+  bridge stays usable against both.
+
+Gripper:
+  Commands carry <GripperCommand>: -1 do nothing, 0 open, 1 close. It defaults
+  to -1 and is forced to -1 whenever safe_mode is on or allow_motion_commands
+  is off, because the gripper is a physical action just like motion. The GUI
+  does not drive it yet; a target JSON may carry an optional "gripper_command"
+  field.
+
 This node does NOT modify any existing node.
 
 Usage:
@@ -125,6 +160,18 @@ class EkiAxisMoveNode(Node):
         # 0.0 restores the legacy "reply to every <Robot> frame" behaviour.
         self.declare_parameter('command_heartbeat_period_sec', 0.5)
 
+        # EKI receive-buffer guard — see the module docstring.
+        # consume_threshold_sec separates the two measured regimes: a round
+        # where the SPS skipped its read block (~91 ms) from one where it ran
+        # it (~168 ms). Retune it if the SPS loop is ever made cheaper.
+        self.declare_parameter('consume_threshold_sec', 0.130)
+        self.declare_parameter('max_pending_heartbeat', 4)
+        self.declare_parameter('max_pending_command', 10)
+        self.declare_parameter('publish_bridge_diagnostics', True)
+        self.declare_parameter(
+            'bridge_diagnostics_topic',
+            '/kuka/axis_move/bridge_diagnostics_json')
+
         # ── Read parameters ──────────────────────────────────────────
         self._host = self.get_parameter('bind_host').get_parameter_value().string_value
         self._port = self.get_parameter('port').get_parameter_value().integer_value
@@ -173,6 +220,16 @@ class EkiAxisMoveNode(Node):
         self._command_timeout = self.get_parameter('command_timeout_sec').get_parameter_value().double_value
         self._heartbeat_period = self.get_parameter(
             'command_heartbeat_period_sec').get_parameter_value().double_value
+        self._consume_threshold = self.get_parameter(
+            'consume_threshold_sec').get_parameter_value().double_value
+        self._max_pending_heartbeat = self.get_parameter(
+            'max_pending_heartbeat').get_parameter_value().integer_value
+        self._max_pending_command = self.get_parameter(
+            'max_pending_command').get_parameter_value().integer_value
+        self._publish_diagnostics = self.get_parameter(
+            'publish_bridge_diagnostics').get_parameter_value().bool_value
+        self._diagnostics_topic = self.get_parameter(
+            'bridge_diagnostics_topic').get_parameter_value().string_value
 
         # ── Internal state ───────────────────────────────────────────
         self._target_lock = threading.Lock()
@@ -183,11 +240,26 @@ class EkiAxisMoveNode(Node):
         self._last_cmd_seq: int = 0
         self._last_sent_seq: int = -1
         self._last_cmd_time: float = 0.0
+        # -1 = no gripper action. Never anything else unless a target JSON
+        # explicitly asks for 0 or 1 and both safety gates are open.
+        self._last_gripper_command: int = -1
 
         # Command pacing state. Touched only from the TCP server thread,
         # same as _last_sent_seq, so it needs no extra lock.
         self._last_command_signature: Optional[tuple] = None
         self._last_command_send_time: float = 0.0
+
+        # EKI receive-buffer guard state. Same threading story as
+        # _last_sent_seq: only the TCP server thread touches these.
+        self._pending_commands: int = 0
+        self._last_frame_monotonic: float = 0.0
+        self._last_frame_delta: float = 0.0
+        # Robot/RxCounter mirror. None until the KUKA publishes one; while it
+        # stays None the timing fallback drives the estimate instead.
+        self._last_rx_counter = None
+        self._rx_ack_available: bool = False
+        self._guard_block_count: int = 0
+        self._last_guard_warn_time: float = 0.0
 
         # Latest feedback from KUKA (for delta validation)
         self._feedback_lock = threading.Lock()
@@ -211,6 +283,12 @@ class EkiAxisMoveNode(Node):
         self.get_logger().info(
             f'  Command heartbeat:      {self._heartbeat_period:.3f} s'
             + ('  (0 = reply to every frame)' if self._heartbeat_period <= 0.0 else ''))
+        self.get_logger().info(
+            f'  EKI buffer guard:       heartbeat stops at '
+            f'{self._max_pending_heartbeat}, all commands stop at '
+            f'{self._max_pending_command} (EKI limit is 16)')
+        self.get_logger().info(
+            f'  Consume threshold:      {self._consume_threshold * 1000:.0f} ms')
         self.get_logger().info('──────────────────────────────────────────────')
 
         # ── Publishers ───────────────────────────────────────────────
@@ -221,6 +299,15 @@ class EkiAxisMoveNode(Node):
         self.get_logger().info(f'Publishing feedback to: {self._feedback_topic}')
         self.get_logger().info(f'Publishing raw robot XML to: {self._raw_robot_xml_topic}')
         self.get_logger().info(f'Publishing raw command XML to: {self._raw_command_xml_topic}')
+
+        # Guard telemetry goes to its own NEW topic. The feedback topic the
+        # GUI and the logger consume is deliberately left untouched.
+        self._pub_diagnostics = None
+        if self._publish_diagnostics:
+            self._pub_diagnostics = self.create_publisher(
+                String, self._diagnostics_topic, 10)
+            self.get_logger().info(
+                f'Publishing bridge diagnostics to: {self._diagnostics_topic}')
 
         # ── Subscriber ───────────────────────────────────────────────
         self._sub_target = self.create_subscription(
@@ -238,6 +325,7 @@ class EkiAxisMoveNode(Node):
             logger=self.get_logger(),
             on_feedback=self._on_robot_message,
             get_command_xml=self._build_command,
+            on_connect=self._on_kuka_connected,
             receive_buffer_size=self._recv_size,
             log_raw_xml=self._log_raw_xml,
             log_command_xml=self._log_command_xml,
@@ -271,6 +359,27 @@ class EkiAxisMoveNode(Node):
         # Extract seq and mode
         cmd_seq = int(data.get('seq', 0))
         mode = str(data.get('mode', 'AxisTarget'))
+
+        # Optional gripper request. Absent, malformed or out-of-range always
+        # degrades to -1 ("do nothing") — a bad payload must never be able to
+        # open or close the gripper.
+        gripper = -1
+        raw_gripper = data.get('gripper_command', -1)
+        try:
+            candidate_gripper = int(raw_gripper)
+        except (TypeError, ValueError):
+            candidate_gripper = -1
+            self.get_logger().warn(
+                f'Target JSON gripper_command={raw_gripper!r} is not an '
+                f'integer — treated as -1 (no action).'
+            )
+        if candidate_gripper in (-1, 0, 1):
+            gripper = candidate_gripper
+        else:
+            self.get_logger().warn(
+                f'Target JSON gripper_command={candidate_gripper} out of '
+                f'range — treated as -1 (no action).'
+            )
 
         # Support both flat layout (legacy) and nested layout (new)
         candidate_axis: dict = {}
@@ -330,11 +439,13 @@ class EkiAxisMoveNode(Node):
                 self._last_valid_cartesian = candidate_cartesian
             self._last_mode = mode
             self._last_enable_move = enable_move
+            self._last_gripper_command = gripper
             self._last_cmd_seq = cmd_seq
             self._last_cmd_time = time.monotonic()
 
         self.get_logger().info(
-            f'[TARGET RECEIVED] seq={cmd_seq} mode={mode} enable={enable_move}'
+            f'[TARGET RECEIVED] seq={cmd_seq} mode={mode} '
+            f'enable={enable_move} gripper={gripper}'
         )
 
     # ── Feedback callback (called from TCP thread) ───────────────────
@@ -345,7 +456,13 @@ class EkiAxisMoveNode(Node):
 
         Called from the TCP server thread — must be thread-safe for
         ROS2 publishers (rclpy is thread-safe for publishing).
+
+        Runs once per received <Robot> frame, which is what makes it the right
+        place to watch the inter-arrival time: a round that took the long path
+        is a round in which the SPS read one command out of its buffer.
         """
+        self._observe_consumption(parsed)
+
         seq = parsed.get('seq', 0)
         mode = parsed.get('mode', 'Unknown')
         status = parsed.get('status', 0)
@@ -355,6 +472,7 @@ class EkiAxisMoveNode(Node):
         limits_ok = parsed.get('limits_ok', False)
         delta_ok = parsed.get('delta_ok', False)
         move_executed = parsed.get('move_executed', False)
+        rx_counter = parsed.get('rx_counter')
 
         # Store latest feedback for delta validation
         with self._feedback_lock:
@@ -377,12 +495,115 @@ class EkiAxisMoveNode(Node):
             'move_executed': move_executed,
             'axis_actual': axis_actual,
             'position_actual': pos_actual,
+            'rx_counter': rx_counter,
             'bridge_safe_mode': self._safe_mode,
             'bridge_allow_motion': self._allow_motion,
         }
         fb_msg = String()
         fb_msg.data = json.dumps(feedback)
         self._pub_feedback.publish(fb_msg)
+
+    # ── EKI receive-buffer guard ─────────────────────────────────────
+
+    def _observe_consumption(self, parsed: dict) -> None:
+        """
+        Track how many commands the KUKA still has unread.
+
+        Preferred path — explicit acknowledgement. Robot/RxCounter is the
+        SPS's own count of COMPLETE commands taken out of the EKI buffer, so
+        the difference between two frames is exactly how many were consumed.
+        No timing assumption is involved.
+
+        Fallback path — timing. Used only until the first RxCounter arrives,
+        which keeps this node working against a controller that has not been
+        updated yet. A long round means the SPS ran its read block.
+
+        Both paths are conservative: they never decrement below zero and never
+        decrement more than what was actually observed.
+        """
+        now = time.monotonic()
+        previous = self._last_frame_monotonic
+        self._last_frame_monotonic = now
+        if previous > 0.0:
+            self._last_frame_delta = now - previous
+
+        rx_counter = parsed.get('rx_counter')
+
+        if rx_counter is not None:
+            if not self._rx_ack_available:
+                self._rx_ack_available = True
+                self.get_logger().info(
+                    '[GUARD] Robot/RxCounter present — buffer estimate now '
+                    'driven by explicit acknowledgement, not by timing.')
+
+            if self._last_rx_counter is None:
+                self._last_rx_counter = rx_counter
+                return
+
+            consumed = rx_counter - self._last_rx_counter
+            self._last_rx_counter = rx_counter
+
+            if consumed < 0:
+                # The SPS zeroes RxCounter when it reopens the channel, so a
+                # backwards step means the buffer was destroyed with it.
+                self._pending_commands = 0
+                self.get_logger().info(
+                    '[GUARD] RxCounter went backwards — KUKA reopened the '
+                    'channel; buffer estimate reset to 0.')
+            elif consumed > 0:
+                self._pending_commands = max(
+                    0, self._pending_commands - consumed)
+            return
+
+        # ---- Fallback: no RxCounter in this telemetry ----
+        if previous <= 0.0:
+            return
+        if (self._last_frame_delta >= self._consume_threshold
+                and self._pending_commands > 0):
+            self._pending_commands -= 1
+
+    def _on_kuka_connected(self) -> None:
+        """
+        Called by the TCP server each time the KUKA (re)connects.
+
+        The EKI receive buffers are torn down with the TCP connection, so this
+        is the only moment their occupancy is known for certain: zero.
+        """
+        self._pending_commands = 0
+        self._last_frame_monotonic = 0.0
+        self._last_rx_counter = None
+        self._last_command_signature = None
+        self._last_command_send_time = 0.0
+        self.get_logger().info(
+            '[GUARD] KUKA connected — EKI buffer estimate reset to 0.')
+
+    def _publish_diagnostics_msg(
+        self,
+        send_reason: Optional[str],
+        guard_blocked: Optional[str],
+        cmd_seq: int,
+        effective_enable: bool,
+    ) -> None:
+        """Publish guard state on its own topic (never on the feedback topic)."""
+        if self._pub_diagnostics is None:
+            return
+
+        msg = String()
+        msg.data = json.dumps({
+            'pending_commands': self._pending_commands,
+            'max_pending_heartbeat': self._max_pending_heartbeat,
+            'max_pending_command': self._max_pending_command,
+            'send_reason': send_reason,
+            'guard_blocked': guard_blocked,
+            'delta_ms': round(self._last_frame_delta * 1000.0, 3),
+            'consume_threshold_ms': round(self._consume_threshold * 1000.0, 1),
+            'rx_counter': self._last_rx_counter,
+            'rx_ack_available': self._rx_ack_available,
+            'cmd_seq': cmd_seq,
+            'effective_enable': bool(effective_enable),
+            'guard_block_count': self._guard_block_count,
+        })
+        self._pub_diagnostics.publish(msg)
 
     # ── Command provider (called from TCP thread) ────────────────────
 
@@ -402,6 +623,7 @@ class EkiAxisMoveNode(Node):
             cart_snap = dict(self._last_valid_cartesian)
             mode_snap = self._last_mode
             enable_move_snap = self._last_enable_move
+            gripper_snap = self._last_gripper_command
             cmd_seq = self._last_cmd_seq
             cmd_time = self._last_cmd_time
 
@@ -413,11 +635,22 @@ class EkiAxisMoveNode(Node):
         # Signature of what the GUI is asking for right now. Compared further
         # down to decide whether this <Robot> frame earns a <Command> reply.
         signature = self._command_signature(
-            cmd_seq, mode_snap, enable_move_snap, target_snap, cart_snap)
+            cmd_seq, mode_snap, enable_move_snap, target_snap, cart_snap,
+            gripper_snap)
 
         # ── Validation layers ────────────────────────────────────────
         effective_enable = enable_move_snap
         reasons: list = []
+
+        # The gripper is a physical action, so it clears exactly the same two
+        # gates as motion before it may leave this node. The builder is called
+        # with the gates already applied, so this is where they must bite.
+        if self._safe_mode or not self._allow_motion:
+            effective_gripper = -1
+        elif gripper_snap in (0, 1):
+            effective_gripper = int(gripper_snap)
+        else:
+            effective_gripper = -1
 
         # Layer 1: safe_mode
         if self._safe_mode:
@@ -496,22 +729,51 @@ class EkiAxisMoveNode(Node):
         heartbeat_due = (
             now - self._last_command_send_time) >= self._heartbeat_period
 
-        if is_new_command:
+        guard_blocked: Optional[str] = None
+
+        if self._pending_commands >= self._max_pending_command:
+            # Hard stop. Past this point the EKI receive memory is close
+            # enough to its limit that one more command risks the connection,
+            # and a dead link serves nobody — least of all a motion command.
+            send_reason = None
+            guard_blocked = 'max_pending_command'
+        elif is_new_command:
             send_reason = 'new_command'
         elif effective_enable:
             # A frame that would put EnableMove=1 on the wire is never
             # withheld, not even for a few milliseconds.
             send_reason = 'enable_move'
+        elif self._pending_commands >= self._max_pending_heartbeat:
+            # The heartbeat carries nothing new, so it is the first thing to
+            # give up when the KUKA has stopped reading.
+            send_reason = None
+            guard_blocked = 'max_pending_heartbeat'
         elif heartbeat_due:
             send_reason = 'heartbeat'
         else:
             send_reason = None
 
+        if guard_blocked is not None:
+            self._guard_block_count += 1
+            # Rate-limited: a stall can last minutes and this must not flood
+            # the console at telemetry rate.
+            if now - self._last_guard_warn_time >= 5.0:
+                self._last_guard_warn_time = now
+                self.get_logger().warn(
+                    f'[GUARD] Withholding commands ({guard_blocked}): '
+                    f'pending={self._pending_commands}, EKI closes the link at '
+                    f'16 unread. The KRL program looks like it has stopped '
+                    f'consuming commands. blocked_total={self._guard_block_count}'
+                )
+
         if send_reason is None:
             self.get_logger().debug(
                 f'[COMMAND SUPPRESSED] seq={cmd_seq} '
+                f'guard={guard_blocked} pending={self._pending_commands} '
                 f'since_last_send={now - self._last_command_send_time:.3f}s'
             )
+            self._publish_diagnostics_msg(
+                None, guard_blocked, cmd_seq, effective_enable)
             self._log_cycle(parsed_feedback, target_snap, effective_enable)
             return None
 
@@ -542,6 +804,7 @@ class EkiAxisMoveNode(Node):
             allow_motion=True,  # Already handled above
             cartesian_target=cart_snap,
             mode=mode_snap,
+            gripper_command=effective_gripper,
         )
 
         # Publish the sent command XML
@@ -551,10 +814,17 @@ class EkiAxisMoveNode(Node):
 
         self._last_command_signature = signature
         self._last_command_send_time = now
+        # One more element written into every EKI receive memory. Only a
+        # confirmed read or a reconnect takes it back down.
+        self._pending_commands += 1
         self.get_logger().debug(
             f'[COMMAND SEND] reason={send_reason} seq={cmd_seq} '
-            f'enable={1 if effective_enable else 0}'
+            f'enable={1 if effective_enable else 0} '
+            f'gripper={effective_gripper} '
+            f'pending={self._pending_commands}'
         )
+        self._publish_diagnostics_msg(
+            send_reason, None, cmd_seq, effective_enable)
 
         # ── Compact log ──────────────────────────────────────────────
         self._log_cycle(parsed_feedback, target_snap, effective_enable)
@@ -570,6 +840,7 @@ class EkiAxisMoveNode(Node):
         enable_move: bool,
         target: dict,
         cartesian: dict,
+        gripper_command: int,
     ) -> tuple:
         """
         Build a comparable signature of the command the GUI is requesting.
@@ -582,11 +853,17 @@ class EkiAxisMoveNode(Node):
         Seq is part of the signature on purpose: joint_command_model.next_seq()
         bumps it on every GUI publish, so a fresh seq is the GUI explicitly
         asking for the command to be delivered again.
+
+        gripper_command is in the signature so that -1 -> 0, -1 -> 1 or 0 -> 1
+        counts as a new command and goes out immediately. A heartbeat repeats
+        the same seq and the same gripper value, so its signature is unchanged
+        and the KUKA ignores it.
         """
         return (
             int(seq),
             str(mode),
             bool(enable_move),
+            int(gripper_command),
             tuple(round(float(target.get(a, 0.0)), 4) for a in _AXES),
             tuple(round(float(cartesian.get(a, 0.0)), 4)
                   for a in _CARTESIAN_AXES),

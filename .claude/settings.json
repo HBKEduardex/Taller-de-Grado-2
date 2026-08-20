@@ -7,7 +7,14 @@
       "Read(//proc/15978/**)",
       "Bash(sed -n '/<CONFIGURATION>/,/<\\\\/CONFIGURATION>/p' config/XmlDualMove.xml)",
       "Bash(sed -n '/<SEND>/,/<\\\\/SEND>/p' config/XmlDualMove.xml)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Bash(PYTHONDONTWRITEBYTECODE=1 python3 -c ' *)",
+      "Bash(PYTHONDONTWRITEBYTECODE=1 python3 -)",
+      "Bash(pdftotext -layout 'KUKA KRL EXAMPLES/EthernetKRL/DOC/KST_Ethernet_KRL_30_es.pdf' -)",
+      "Bash(grep -v \"^--$\")",
+      "Bash(sed 's/\\\\$$//')",
+      "Bash(git diff *)",
+      "Bash(git status *)"
     ]
   }
 }

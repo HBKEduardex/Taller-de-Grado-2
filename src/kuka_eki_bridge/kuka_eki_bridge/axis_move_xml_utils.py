@@ -107,6 +107,7 @@ def parse_axis_move_xml(xml_string: str) -> Optional[Dict]:
           <LimitsOK>1</LimitsOK>
           <DeltaOK>1</DeltaOK>
           <MoveExecuted>0</MoveExecuted>
+          <RxCounter>42</RxCounter>
         </Robot>
 
     Args:
@@ -123,7 +124,13 @@ def parse_axis_move_xml(xml_string: str) -> Optional[Dict]:
             'move_executed'    (bool)
             'axis_actual'      (dict A1-A6 float)
             'position_actual'  (dict X,Y,Z,A,B,C float)
+            'rx_counter'       (int or None)
         or None if parsing fails.
+
+    rx_counter is the SPS's own count of COMPLETE commands taken out of the
+    EthernetKRL receive buffer. It is None when the KUKA has not been updated
+    with the Robot/RxCounter element yet, which lets the bridge fall back to
+    its timing heuristic instead of assuming zero consumption.
     """
     try:
         root = ET.fromstring(xml_string.strip())
@@ -151,6 +158,16 @@ def parse_axis_move_xml(xml_string: str) -> Optional[Dict]:
         result['mode'] = mode_elem.text.strip()
     else:
         result['mode'] = root.get('Mode', 'Unknown')
+
+    # --- RxCounter (explicit RX acknowledgement; absent on older configs) ---
+    rx_elem = root.find('RxCounter')
+    if rx_elem is not None and rx_elem.text:
+        try:
+            result['rx_counter'] = int(rx_elem.text.strip())
+        except ValueError:
+            result['rx_counter'] = None
+    else:
+        result['rx_counter'] = None
 
     # --- Status ---
     status_elem = root.find('Status')
@@ -222,6 +239,7 @@ def build_axis_move_command_xml(
     allow_motion: bool,
     cartesian_target: Optional[Dict[str, float]] = None,
     mode: str = 'AxisTarget',
+    gripper_command: int = -1,
 ) -> str:
     """
     Build the <Command> XML string to send back to the KUKA.
@@ -235,6 +253,7 @@ def build_axis_move_command_xml(
                       A4="0.0"  A5="0.0"  A6="0.0"/>
           <CartesianTarget X="0.0" Y="0.0" Z="0.0"
                            A="0.0" B="0.0" C="0.0"/>
+          <GripperCommand>-1</GripperCommand>
         </Command>
 
     Args:
@@ -245,6 +264,10 @@ def build_axis_move_command_xml(
         allow_motion: If False, EnableMove is always forced to 0.
         cartesian_target: Optional dict with X, Y, Z, A, B, C values.
         mode:         'AxisTarget' or 'CartesianTarget'.
+        gripper_command: -1 do nothing, 0 open, 1 close. Anything else is
+                      coerced to -1, so a malformed value can never move the
+                      gripper. Forced to -1 whenever motion is gated off,
+                      because the gripper is a physical action too.
 
     Returns:
         XML string ready to be sent over TCP.
@@ -254,6 +277,15 @@ def build_axis_move_command_xml(
         effective_enable = 0
     else:
         effective_enable = 1 if enable_move else 0
+
+    # The gripper is a physical action, so it passes through exactly the same
+    # gates as motion, and any unexpected value degrades to "do nothing".
+    if safe_mode or not allow_motion:
+        effective_gripper = -1
+    elif gripper_command in (0, 1):
+        effective_gripper = int(gripper_command)
+    else:
+        effective_gripper = -1
 
     a1 = target.get('A1', 0.0)
     a2 = target.get('A2', -90.0)
@@ -293,6 +325,7 @@ def build_axis_move_command_xml(
         f' B="{cb:.4f}"'
         f' C="{cc:.4f}"'
         f'/>'
+        f'<GripperCommand>{effective_gripper}</GripperCommand>'
         f'</Command>'
     )
     return xml

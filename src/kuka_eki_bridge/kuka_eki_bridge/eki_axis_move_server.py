@@ -51,7 +51,8 @@ class EkiAxisMoveServer:
         port: int = 59153,
         logger: Optional[object] = None,
         on_feedback: Optional[Callable[[Dict, str], None]] = None,
-        get_command_xml: Optional[Callable[[Dict], str]] = None,
+        get_command_xml: Optional[Callable[[Dict], Optional[str]]] = None,
+        on_connect: Optional[Callable[[], None]] = None,
         receive_buffer_size: int = 8192,
         log_raw_xml: bool = False,
         log_command_xml: bool = True,
@@ -66,7 +67,12 @@ class EkiAxisMoveServer:
             on_feedback:        Callback invoked with (parsed_dict, raw_xml_string)
                                 for every complete <Robot> message received.
             get_command_xml:    Provider called with (parsed_dict) that returns
-                                the <Command> XML string to send back to KUKA.
+                                the <Command> XML string to send back to KUKA,
+                                or None to send nothing for that frame.
+            on_connect:         Called once each time the KUKA (re)connects.
+                                The EKI buffers live and die with the TCP
+                                connection, so this is the one moment a
+                                consumer can know their state for certain.
             receive_buffer_size: TCP recv buffer size in bytes.
             log_raw_xml:        If True, log raw incoming XML.
             log_command_xml:    If True, log the XML sent to the KUKA.
@@ -76,6 +82,7 @@ class EkiAxisMoveServer:
         self._logger = logger
         self._on_feedback = on_feedback
         self._get_command_xml = get_command_xml
+        self._on_connect = on_connect
         self._recv_size = receive_buffer_size
         self._log_raw_xml = log_raw_xml
         self._log_command_xml = log_command_xml
@@ -111,6 +118,12 @@ class EkiAxisMoveServer:
         """
         addr_str = f'{client_address[0]}:{client_address[1]}'
         self._info(f'KUKA connected (axis_move): {addr_str}')
+
+        if self._on_connect:
+            try:
+                self._on_connect()
+            except Exception as cb_err:
+                self._error(f'Connect callback error: {cb_err}')
 
         xml_buffer = TcpXmlAxisMoveBuffer()
 

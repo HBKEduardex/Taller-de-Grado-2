@@ -1,9 +1,27 @@
 <ETHERNETKRL>
 	<CONFIGURATION>
 		<EXTERNAL>
+			<!-- Ubuntu is the TCP server; the KUKA connects to it as client. -->
 			<IP>192.168.250.30</IP>
 			<PORT>59153</PORT>
 		</EXTERNAL>
+		<INTERNAL>
+			<!-- The channel belongs to the Submit interpreter: SPS.SUB does
+			     EKI_Init / EKI_Open and every Get/Set.  With Submit here the
+			     connection survives robot-program selection changes and is
+			     only cleared when the Submit itself is deselected. -->
+			<ENVIRONMENT>Submit</ENVIRONMENT>
+			<!-- Stated explicitly rather than left to the default.  16 is the
+			     number of unread elements per memory at which EthernetKRL
+			     CLOSES the connection (EKI01280), so it must not be a
+			     surprise. -->
+			<BUFFERING Mode="FIFO" Limit="16"/>
+			<!-- Client mode: EKI_Open() blocks until the connection is up or
+			     this timeout expires.  Kept short so a missing Ubuntu server
+			     can never stall the PLC for long; SPS.SUB retries on a slow
+			     cadence (XD_OPEN_RETRY_CYCLES). -->
+			<TIMEOUT Connect="500"/>
+		</INTERNAL>
 	</CONFIGURATION>
 	<RECEIVE>
 		<XML>
@@ -26,6 +44,10 @@
 			<ELEMENT Tag="Command/CartesianTarget/@A" Type="REAL"/>
 			<ELEMENT Tag="Command/CartesianTarget/@B" Type="REAL"/>
 			<ELEMENT Tag="Command/CartesianTarget/@C" Type="REAL"/>
+
+			<!-- Garra: -1 = nada, 0 = abrir, 1 = cerrar.
+			     Only XmlDualMove.src acts on it; the SPS just stores it. -->
+			<ELEMENT Tag="Command/GripperCommand" Type="INT"/>
 		</XML>
 	</RECEIVE>
 	<SEND>
@@ -52,6 +74,12 @@
 			<ELEMENT Tag="Robot/LimitsOK"/>
 			<ELEMENT Tag="Robot/DeltaOK"/>
 			<ELEMENT Tag="Robot/MoveExecuted"/>
+
+			<!-- Explicit RX acknowledgement: number of COMPLETE commands the
+			     SPS has consumed since the channel opened.  Lets the Ubuntu
+			     bridge know the KUKA is draining, instead of guessing from
+			     cycle timing. -->
+			<ELEMENT Tag="Robot/RxCounter"/>
 		</XML>
 	</SEND>
 </ETHERNETKRL>

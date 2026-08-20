@@ -70,3 +70,31 @@ eki_axis_move:
     # which is what was capping telemetry at ~6 Hz.
     # Set to 0.0 to restore the previous "reply to every frame" behaviour.
     command_heartbeat_period_sec: 0.5
+
+    # ── EKI receive-buffer guard ───────────────────────────────────────
+    # EthernetKRL does NOT drop old elements when its receive memory fills:
+    # it CLOSES the TCP connection (KST Ethernet KRL 3.0, p. 97-98). The
+    # default limit is 16 elements and XmlDualMove.xml declares no <INTERNAL>
+    # block, so 16 is what applies. Several telemetry logs already end
+    # abruptly after exactly 16 rounds in which the SPS skipped its read.
+    #
+    # The KUKA now reports Robot/RxCounter — the SPS's own count of complete
+    # commands drained from the buffer — so the estimate is driven by an
+    # explicit acknowledgement, not by timing.
+    #
+    # consume_threshold_sec is only the FALLBACK, used until the first
+    # RxCounter arrives, so this bridge still works against a controller that
+    # has not been updated yet. It separates the two measured regimes: a round
+    # where the SPS skipped its read block (~91 ms) from one where it ran it
+    # (~168 ms).
+    consume_threshold_sec: 0.130
+
+    # Stop sending heartbeats at this estimated backlog...
+    max_pending_heartbeat: 4
+    # ...and stop sending anything at all here. Both far below 16.
+    # Set to a huge value to disable the guard.
+    max_pending_command: 10
+
+    # Guard state goes to its own NEW topic; feedback_json is untouched.
+    publish_bridge_diagnostics: true
+    bridge_diagnostics_topic: "/kuka/axis_move/bridge_diagnostics_json"

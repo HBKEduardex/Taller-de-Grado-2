@@ -768,44 +768,38 @@ DECL CONV_MODE_TYPE ActualConveyorMode=#Relative
 ;==================================
 
 ; ================================================
-; XmlDualMove Submit Interpreter shared variables
+; XmlDualMove shared variables  (Submit-owned EKI)
 ; Prefix: XD_ (XmlDualMove)
 ; ================================================
+; ARCHITECTURE
+;   SPS.SUB owns the EKI channel end to end: EKI_Init, EKI_Open, every
+;   EKI_Get and every EKI_Set live in the Submit interpreter.  The robot
+;   interpreter never touches EKI.  Telemetry therefore keeps flowing no
+;   matter which robot program is selected - DEMO26, XmlDualMove, or none.
+;
+;   SPS drains the receive buffer on EVERY cycle and publishes the last
+;   valid command into the mailbox below.  Nothing gates that drain on the
+;   robot interpreter, which is what used to fill the EKI memory and raise
+;   EKI01280.
+;
+;   The SPS never executes motion and never drives the gripper.
 
-; --- Master switch ---
-; Set externally before starting XmlDualMove; SPS.SUB does not change it.
-; TRUE  = SPS.SUB handles EKI communication
-; FALSE = XmlDualMove.src handles EKI communication (original behaviour)
-DECL BOOL XD_USE_SUBMIT = TRUE
-
-; --- EKI channel state ---
-; Set to TRUE by XmlDualMove.src after successful EKI_Open
-; SPS.SUB checks this before calling EKI_Get/Set/Send
+; --- EKI channel state (written by SPS.SUB only) ---
+; TRUE once EKI_Init + EKI_Open succeeded.  SPS clears it on any EKI error
+; and retries the open on a slow cadence.
 DECL BOOL XD_EKI_ACTIVE = FALSE
 
-; --- Command handshake ---
-; XD_CMD_UPDATING: TRUE while SPS.SUB is copying temp -> globals (atomic guard)
-; XD_CMD_RECEIVED: TRUE when a complete command has been published by SPS.SUB
+; --- Mailbox guard ---
+; TRUE while SPS is copying temporaries into the mailbox.  The robot
+; interpreter must only read the mailbox while this is FALSE.
 DECL BOOL XD_CMD_UPDATING = FALSE
-DECL BOOL XD_CMD_RECEIVED = FALSE
 
-; --- Motion/drain handshake ---
-; XD_ROBOT_BUSY: TRUE from immediately before PTP until the post-PTP drain completes
-; XD_DRAIN_REQUEST: XmlDualMove asks SPS.SUB to finish draining the receive buffer
-; XD_DRAIN_DONE: SPS.SUB confirms that no pre-existing command remains pending
-; XD_LAST_DRAINED_SEQ: latest valid sequence discarded while XD_ROBOT_BUSY=TRUE
-DECL BOOL XD_ROBOT_BUSY = FALSE
-DECL BOOL XD_DRAIN_REQUEST = FALSE
-DECL BOOL XD_DRAIN_DONE = FALSE
-DECL INT XD_LAST_DRAINED_SEQ = -1
-
-; --- Command sequence ---
-; XD_CMD_SEQ: sequence number from latest Ubuntu command
-; XD_LAST_MOVE_SEQ: last sequence number that was physically executed by PTP
+; --- Mailbox: last valid command received from Ubuntu ---
+; XD_CMD_SEQ is written LAST, so it doubles as the "packet complete"
+; marker.  The robot interpreter detects a new command purely by seeing
+; XD_CMD_SEQ change; there is no consumed/acknowledged flag any more.
 DECL INT XD_CMD_SEQ = 0
-DECL INT XD_LAST_MOVE_SEQ = -1
 
-; --- Command targets (axis) ---
 DECL REAL XD_TARGET_A1 = 0.0
 DECL REAL XD_TARGET_A2 = 0.0
 DECL REAL XD_TARGET_A3 = 0.0
@@ -813,7 +807,6 @@ DECL REAL XD_TARGET_A4 = 0.0
 DECL REAL XD_TARGET_A5 = 0.0
 DECL REAL XD_TARGET_A6 = 0.0
 
-; --- Command targets (cartesian) ---
 DECL REAL XD_TARGET_X = 0.0
 DECL REAL XD_TARGET_Y = 0.0
 DECL REAL XD_TARGET_Z = 0.0
@@ -821,23 +814,30 @@ DECL REAL XD_TARGET_A = 0.0
 DECL REAL XD_TARGET_B = 0.0
 DECL REAL XD_TARGET_C = 0.0
 
-; --- Command mode and enable ---
-; XD_ENABLE_MOVE: EnableMove flag from Ubuntu
-; XD_AXIS_MODE:   TRUE if mode starts with 'A' or 'a'
-; XD_CART_MODE:    TRUE if mode starts with 'C' or 'c'
 DECL BOOL XD_ENABLE_MOVE = FALSE
 DECL BOOL XD_AXIS_MODE = FALSE
 DECL BOOL XD_CART_MODE = FALSE
 
-; --- Validation states (written by XmlDualMove.src, read by SPS.SUB for telemetry) ---
+; --- Gripper command from Ubuntu ---
+; -1 = do nothing   0 = open   1 = close
+; SPS validates the value and stores it; only the robot interpreter
+; (XmlDualMove.src) ever calls GRPg_SetStateAndCheck.  Any value outside
+; {-1, 0, 1} is stored as -1.
+DECL INT XD_GRIPPER_COMMAND = -1
+
+; --- Validation states (written by XmlDualMove.src, read by SPS for telemetry) ---
 DECL BOOL XD_LIMITS_OK = FALSE
 DECL BOOL XD_DELTA_OK = FALSE
 DECL BOOL XD_MOVE_READY = FALSE
-; One-shot event for XD_LAST_MOVE_SEQ; SPS.SUB clears it only after a successful send
+; One-shot event for XD_LAST_MOVE_SEQ; SPS clears it only after a successful send
 DECL BOOL XD_MOVE_EXECUTED = FALSE
 
+; Last sequence physically executed by a PTP.  Guards against a heartbeat
+; (which repeats the same Seq on purpose) moving the robot twice.
+DECL INT XD_LAST_MOVE_SEQ = -1
+
 ; --- Telemetry send frequency ---
-; XD_SEND_DIVISOR: send telemetry every N SPS cycles (~12ms/cycle, N=8 gives approx 10Hz)
+; XD_SEND_DIVISOR: send telemetry every N SPS cycles.
 ; NOTE: SPS cycle time is NOT hard real-time; actual frequency is approximate.
 DECL INT XD_SEND_DIVISOR = 4
 ; Counter for cycle divisor (internal, incremented by SPS.SUB)
@@ -845,6 +845,32 @@ DECL INT XD_SEND_COUNTER = 0
 
 ; --- Telemetry sequence (SPS.SUB own send counter) ---
 DECL INT XD_SEND_SEQ = 0
+
+; --- RX acknowledgement counter ---
+; Incremented by SPS.SUB once per COMPLETE command consumed from the EKI
+; buffer, and published as Robot/RxCounter.  This lets the Ubuntu bridge
+; know directly that the KUKA is draining its receive memory, instead of
+; inferring it from cycle timing.
+DECL INT XD_RX_COUNTER = 0
+
+; --- EKI open retry pacing ---
+; The KUKA is the TCP client here, and in client mode EKI_Open() blocks
+; until the connection is up or <TIMEOUT Connect> expires.  Retrying on
+; every SPS cycle would stall the PLC, so retries are paced: one attempt
+; every XD_OPEN_RETRY_CYCLES cycles while the channel is down.
+DECL INT XD_OPEN_RETRY_CYCLES = 60
+DECL INT XD_OPEN_COUNTER = 0
+
+; --- REMOVED in the Submit-owned redesign ---
+;   XD_USE_SUBMIT       the Submit is now always the owner; no selector.
+;   XD_CMD_RECEIVED     gated the RX drain on the robot interpreter and
+;                       was the direct cause of the EKI buffer filling up.
+;   XD_ROBOT_BUSY       part of the same gate.
+;   XD_DRAIN_REQUEST    post-PTP drain handshake.
+;   XD_DRAIN_DONE       the robot interpreter used to WAIT FOR this, which
+;                       could deadlock against a stalled SPS.
+;   XD_LAST_DRAINED_SEQ only meaningful for that handshake.
+; The mailbox replaces all of them: SPS always drains, always overwrites.
 
 ;ENDFOLD (USER GLOBALS)
 ENDDAT

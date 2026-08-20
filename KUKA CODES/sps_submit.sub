@@ -8,14 +8,13 @@ DEF  SPS ( )
   DECL MODUS_T MODE
   ;ENDFOLD (BASISTECH DECL)
   ;FOLD USER DECL
-  ; Please insert user defined declarations
-
   ; XmlDualMove Submit declarations
   DECL EKI_STATUS XD_RET
 
   DECL INT xd_tempSeq
   DECL BOOL xd_tempEnableMove
   DECL CHAR xd_tempMode[64]
+  DECL INT xd_tempGripper
   DECL INT xd_tempI
   DECL INT xd_packetCounter
   DECL INT xd_sentMoveSeq
@@ -59,26 +58,29 @@ DEF  SPS ( )
   BM_OUTPUTVALUE = 0
   ;ENDFOLD (BACKUPMANAGER PLC INIT)
   ;FOLD USER INIT
-  ; Please insert user defined initialization commands
-
   ; XmlDualMove Submit initialization
+  ; The channel is opened from the LOOP, not here: in client mode EKI_Open()
+  ; blocks, and INI must not hang if Ubuntu is not listening yet.
   XD_EKI_ACTIVE = FALSE
   XD_CMD_UPDATING = FALSE
-  XD_CMD_RECEIVED = FALSE
-  XD_ROBOT_BUSY = FALSE
-  XD_DRAIN_REQUEST = FALSE
-  XD_DRAIN_DONE = FALSE
-  XD_LAST_DRAINED_SEQ = -1
+  XD_CMD_SEQ = 0
+  XD_GRIPPER_COMMAND = -1
+  XD_ENABLE_MOVE = FALSE
+  XD_AXIS_MODE = FALSE
+  XD_CART_MODE = FALSE
   XD_LAST_MOVE_SEQ = -1
   XD_MOVE_EXECUTED = FALSE
   XD_SEND_COUNTER = 0
   XD_SEND_SEQ = 0
+  XD_RX_COUNTER = 0
+  XD_OPEN_COUNTER = 0
   FOR xd_tempI = 1 TO 64
     xd_tempMode[xd_tempI] = 0
   ENDFOR
   ; Initialize EKI receive temporary variables
   xd_tempSeq = 0
   xd_tempEnableMove = FALSE
+  xd_tempGripper = -1
 
   xd_tempA1 = 0.0
   xd_tempA2 = 0.0
@@ -120,338 +122,381 @@ DEF  SPS ( )
     ;FOLD USER PLC
     ;Make your modifications here
 
-    ; XmlDualMove Submit communication
-    ; EKI_STATUS: Msg_No, Connected, Read, Buff and Counter.
-    IF (XD_USE_SUBMIT == TRUE) AND (XD_EKI_ACTIVE == TRUE) THEN
+    ; ==========================================================
+    ; XmlDualMove - the Submit interpreter OWNS the EKI channel
+    ; ==========================================================
+    ; EKI_Init / EKI_Open / EKI_Close and every Get/Set live here.  The
+    ; robot interpreter never touches EKI, so telemetry keeps flowing
+    ; whichever program is selected: DEMO26, XmlDualMove, or none at all.
+    ;
+    ; The receive buffer is drained on EVERY cycle.  Nothing gates it on the
+    ; robot interpreter any more - that gate is what let the EKI memory fill
+    ; up and raise EKI01280, because EthernetKRL closes the connection when
+    ; a memory reaches its element limit instead of dropping old entries.
+    ;
+    ; A valid packet is published into the XD_ mailbox, newest wins.  There
+    ; is no queue in KRL: if Seq 100, 101 and 102 arrive back to back, all
+    ; three are consumed and the mailbox simply ends up holding 102.
+    ;
+    ; THE SPS NEVER EXECUTES MOTION AND NEVER DRIVES THE GRIPPER.
+
+    ; ---------- 1. Connection management ----------
+    ; Ubuntu is the TCP server, so the KUKA is the client and EKI_Open()
+    ; blocks until the link is up or <TIMEOUT Connect> (500 ms) expires.
+    ; Retries are paced so a missing server cannot stall the PLC.
+    IF XD_EKI_ACTIVE == FALSE THEN
+      XD_OPEN_COUNTER = XD_OPEN_COUNTER + 1
+      IF XD_OPEN_COUNTER >= XD_OPEN_RETRY_CYCLES THEN
+        XD_OPEN_COUNTER = 0
+        XD_RET = EKI_Init("XmlDualMove")
+        IF XD_RET.Msg_No == 0 THEN
+          XD_RET = EKI_Open("XmlDualMove")
+          IF (XD_RET.Msg_No == 0) AND (XD_RET.Connected == TRUE) THEN
+            ; Fresh channel means a fresh mailbox.  Seq 0 is the "no command
+            ; yet" sentinel; the robot interpreter ignores anything <= 0.
+            XD_CMD_UPDATING = FALSE
+            XD_CMD_SEQ = 0
+            XD_GRIPPER_COMMAND = -1
+            XD_ENABLE_MOVE = FALSE
+            XD_RX_COUNTER = 0
+            XD_SEND_COUNTER = 0
+            XD_EKI_ACTIVE = TRUE
+          ELSE
+            XD_RET = EKI_Clear("XmlDualMove")
+          ENDIF
+        ENDIF
+      ENDIF
+    ENDIF
+
+    ; ---------- 2. Receive and transmit ----------
+    IF XD_EKI_ACTIVE == TRUE THEN
       xd_channelOK = TRUE
+      xd_packetOK = FALSE
 
-      ; Consume while busy; publish only when the slot is free.
-      IF ((XD_ROBOT_BUSY == TRUE) AND (XD_DRAIN_DONE == FALSE)) OR (XD_CMD_RECEIVED == FALSE) THEN
-        XD_RET = EKI_CheckBuffer("XmlDualMove", "Command/Seq")
+      ; ---- RX: always drain, one complete packet per cycle ----
+      ; One packet per cycle is ~6 packets/s of drain capacity against a
+      ; bridge that sends at ~2 Hz, so the buffer cannot build up.  Draining
+      ; more per cycle would only make the SPS cycle time spikier.
+      XD_RET = EKI_CheckBuffer("XmlDualMove", "Command/Seq")
+      IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+        xd_channelOK = FALSE
+      ELSE
+        IF XD_RET.Buff > 0 THEN
+          xd_packetOK = TRUE
+          xd_packetCounter = -1
+
+        XD_RET = EKI_GetInt("XmlDualMove", "Command/Seq", xd_tempSeq)
         IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
           xd_channelOK = FALSE
+          xd_packetOK = FALSE
         ELSE
-          IF XD_RET.Buff > 0 THEN
-            xd_packetOK = TRUE
-            xd_packetCounter = -1
-
-            ; Seq establishes the packet Counter.
-            XD_RET = EKI_GetInt("XmlDualMove", "Command/Seq", xd_tempSeq)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_channelOK = FALSE
+          IF XD_RET.Read <> 1 THEN
+            xd_packetOK = FALSE
+          ELSE
+            xd_packetCounter = XD_RET.Counter
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetString("XmlDualMove", "Command/Mode", xd_tempMode[])
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
               xd_packetOK = FALSE
-            ELSE
-              IF XD_RET.Read <> 1 THEN
-                xd_packetOK = FALSE
-              ELSE
-                xd_packetCounter = XD_RET.Counter
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetString("XmlDualMove", "Command/Mode", xd_tempMode[])
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetBool("XmlDualMove", "Command/EnableMove", xd_tempEnableMove)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A1", xd_tempA1)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A2", xd_tempA2)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A3", xd_tempA3)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A4", xd_tempA4)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A5", xd_tempA5)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A6", xd_tempA6)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@X", xd_tempX)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@Y", xd_tempY)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@Z", xd_tempZ)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@A", xd_tempA)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@B", xd_tempB)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@C", xd_tempC)
-              IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                xd_channelOK = FALSE
-                xd_packetOK = FALSE
-              ELSE
-                IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
-                  xd_packetOK = FALSE
-                ENDIF
-              ENDIF
-            ENDIF
-
-            IF xd_channelOK THEN
-              IF xd_packetOK THEN
-                IF XD_ROBOT_BUSY AND (XD_DRAIN_DONE == FALSE) THEN
-                  XD_LAST_DRAINED_SEQ = xd_tempSeq
-                  XD_CMD_RECEIVED = FALSE
-                ELSE
-                  XD_CMD_UPDATING = TRUE
-                  XD_TARGET_A1 = xd_tempA1
-                  XD_TARGET_A2 = xd_tempA2
-                  XD_TARGET_A3 = xd_tempA3
-                  XD_TARGET_A4 = xd_tempA4
-                  XD_TARGET_A5 = xd_tempA5
-                  XD_TARGET_A6 = xd_tempA6
-                  XD_TARGET_X = xd_tempX
-                  XD_TARGET_Y = xd_tempY
-                  XD_TARGET_Z = xd_tempZ
-                  XD_TARGET_A = xd_tempA
-                  XD_TARGET_B = xd_tempB
-                  XD_TARGET_C = xd_tempC
-                  XD_ENABLE_MOVE = xd_tempEnableMove
-                  XD_AXIS_MODE = (xd_tempMode[1] == "A") OR (xd_tempMode[1] == "a")
-                  XD_CART_MODE = (xd_tempMode[1] == "C") OR (xd_tempMode[1] == "c")
-                  XD_CMD_RECEIVED = TRUE
-                  ; Publish sequence last.
-                  XD_CMD_SEQ = xd_tempSeq
-                  XD_CMD_UPDATING = FALSE
-                ENDIF
-              ELSE
-                ; Exceptional recovery for an inconsistent packet.
-                XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/Seq")
-                IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                  xd_channelOK = FALSE
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/Mode")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/EnableMove")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A1")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A2")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A3")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A4")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A5")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A6")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@X")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@Y")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@Z")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@A")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@B")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-                IF xd_channelOK THEN
-                  XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@C")
-                  IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-                    xd_channelOK = FALSE
-                  ENDIF
-                ENDIF
-              ENDIF
             ENDIF
           ENDIF
         ENDIF
-      ENDIF
-
-      ; Post-PTP drain acknowledgement.
-      IF xd_channelOK AND XD_ROBOT_BUSY AND XD_DRAIN_REQUEST THEN
-        XD_RET = EKI_CheckBuffer("XmlDualMove", "Command/Seq")
-        IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-          xd_channelOK = FALSE
-        ELSE
-          IF XD_RET.Buff < 1 THEN
-            XD_DRAIN_DONE = TRUE
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetBool("XmlDualMove", "Command/EnableMove", xd_tempEnableMove)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
           ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A1", xd_tempA1)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A2", xd_tempA2)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A3", xd_tempA3)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A4", xd_tempA4)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A5", xd_tempA5)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/AxisTarget/@A6", xd_tempA6)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@X", xd_tempX)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@Y", xd_tempY)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@Z", xd_tempZ)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@A", xd_tempA)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@B", xd_tempB)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/CartesianTarget/@C", xd_tempC)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetInt("XmlDualMove", "Command/GripperCommand", xd_tempGripper)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
+
+        ; ---- Publish the mailbox ----
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_CMD_UPDATING = TRUE
+          XD_TARGET_A1 = xd_tempA1
+          XD_TARGET_A2 = xd_tempA2
+          XD_TARGET_A3 = xd_tempA3
+          XD_TARGET_A4 = xd_tempA4
+          XD_TARGET_A5 = xd_tempA5
+          XD_TARGET_A6 = xd_tempA6
+          XD_TARGET_X = xd_tempX
+          XD_TARGET_Y = xd_tempY
+          XD_TARGET_Z = xd_tempZ
+          XD_TARGET_A = xd_tempA
+          XD_TARGET_B = xd_tempB
+          XD_TARGET_C = xd_tempC
+          XD_ENABLE_MOVE = xd_tempEnableMove
+          XD_AXIS_MODE = (xd_tempMode[1] == "A") OR (xd_tempMode[1] == "a")
+          XD_CART_MODE = (xd_tempMode[1] == "C") OR (xd_tempMode[1] == "c")
+          ; Gripper: accept only -1, 0 or 1.  Anything else means "do nothing".
+          IF (xd_tempGripper == 0) OR (xd_tempGripper == 1) THEN
+            XD_GRIPPER_COMMAND = xd_tempGripper
+          ELSE
+            XD_GRIPPER_COMMAND = -1
+          ENDIF
+          ; Published LAST: XD_CMD_SEQ is the packet-complete marker the robot
+          ; interpreter watches.
+          XD_CMD_SEQ = xd_tempSeq
+          XD_CMD_UPDATING = FALSE
+          ; Explicit RX acknowledgement for the Ubuntu bridge.
+          XD_RX_COUNTER = XD_RX_COUNTER + 1
+        ENDIF
+
+        ; ---- Inconsistent packet: resync every memory ----
+        IF xd_channelOK AND (xd_packetOK == FALSE) THEN
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/Seq")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/Mode")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/EnableMove")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A1")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A2")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A3")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A4")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A5")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/AxisTarget/@A6")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@X")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@Y")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@Z")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@A")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@B")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/CartesianTarget/@C")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/GripperCommand")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        ENDIF
         ENDIF
       ENDIF
 
-      ; Stop telemetry after the first failed Set/Send.
+      ; ---- TX: telemetry ----
       IF xd_channelOK THEN
         XD_SEND_COUNTER = XD_SEND_COUNTER + 1
         IF XD_SEND_COUNTER >= XD_SEND_DIVISOR THEN
@@ -461,169 +506,177 @@ DEF  SPS ( )
           xd_sentMoveSeq = XD_LAST_MOVE_SEQ
           xd_sendMoveExecuted = XD_MOVE_EXECUTED
 
+        IF xd_sendOK THEN
           XD_RET = EKI_SetInt("XmlDualMove", "Robot/Seq", XD_SEND_SEQ)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
           ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          IF XD_CART_MODE THEN
+            XD_RET = EKI_SetString("XmlDualMove", "Robot/Mode", "CartesianTarget")
+          ELSE
+            XD_RET = EKI_SetString("XmlDualMove", "Robot/Mode", "AxisTarget")
+          ENDIF
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A1", $AXIS_ACT.A1)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A2", $AXIS_ACT.A2)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A3", $AXIS_ACT.A3)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A4", $AXIS_ACT.A4)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A5", $AXIS_ACT.A5)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A6", $AXIS_ACT.A6)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@X", $POS_ACT.X)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Y", $POS_ACT.Y)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Z", $POS_ACT.Z)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@A", $POS_ACT.A)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@B", $POS_ACT.B)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@C", $POS_ACT.C)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetInt("XmlDualMove", "Robot/Status", 1)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetBool("XmlDualMove", "Robot/MoveReady", XD_MOVE_READY)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetBool("XmlDualMove", "Robot/LimitsOK", XD_LIMITS_OK)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetBool("XmlDualMove", "Robot/DeltaOK", XD_DELTA_OK)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetBool("XmlDualMove", "Robot/MoveExecuted", xd_sendMoveExecuted)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_SetInt("XmlDualMove", "Robot/RxCounter", XD_RX_COUNTER)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_sendOK THEN
+          XD_RET = EKI_Send("XmlDualMove", "Robot")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_sendOK = FALSE
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
 
-          IF xd_sendOK THEN
-            IF XD_CART_MODE THEN
-              XD_RET = EKI_SetString("XmlDualMove", "Robot/Mode", "CartesianTarget")
-            ELSE
-              XD_RET = EKI_SetString("XmlDualMove", "Robot/Mode", "AxisTarget")
-            ENDIF
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
+        ; Report MoveExecuted once for the captured move sequence.
+        IF xd_sendOK AND xd_sendMoveExecuted THEN
+          IF XD_LAST_MOVE_SEQ == xd_sentMoveSeq THEN
+            XD_MOVE_EXECUTED = FALSE
           ENDIF
-
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A1", $AXIS_ACT.A1)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A2", $AXIS_ACT.A2)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A3", $AXIS_ACT.A3)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A4", $AXIS_ACT.A4)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A5", $AXIS_ACT.A5)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/AxisActual/@A6", $AXIS_ACT.A6)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@X", $POS_ACT.X)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Y", $POS_ACT.Y)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Z", $POS_ACT.Z)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@A", $POS_ACT.A)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@B", $POS_ACT.B)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@C", $POS_ACT.C)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetInt("XmlDualMove", "Robot/Status", 1)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetBool("XmlDualMove", "Robot/MoveReady", XD_MOVE_READY)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetBool("XmlDualMove", "Robot/LimitsOK", XD_LIMITS_OK)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetBool("XmlDualMove", "Robot/DeltaOK", XD_DELTA_OK)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_SetBool("XmlDualMove", "Robot/MoveExecuted", xd_sendMoveExecuted)
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-          IF xd_sendOK THEN
-            XD_RET = EKI_Send("XmlDualMove", "Robot")
-            IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
-              xd_sendOK = FALSE
-              xd_channelOK = FALSE
-            ENDIF
-          ENDIF
-
-          ; Report MoveExecuted once for the captured move sequence.
-          IF xd_sendOK AND xd_sendMoveExecuted THEN
-            IF XD_LAST_MOVE_SEQ == xd_sentMoveSeq THEN
-              XD_MOVE_EXECUTED = FALSE
-            ENDIF
-          ENDIF
+        ENDIF
         ENDIF
       ENDIF
 
-      ; Fail safe on any EKI error or disconnected status.  No automatic reopen.
+      ; ---- Fail safe: drop the channel and let section 1 reopen it ----
       IF xd_channelOK == FALSE THEN
         XD_EKI_ACTIVE = FALSE
         XD_ENABLE_MOVE = FALSE
         XD_MOVE_READY = FALSE
-        XD_CMD_RECEIVED = FALSE
         XD_CMD_UPDATING = FALSE
+        XD_GRIPPER_COMMAND = -1
+        XD_OPEN_COUNTER = 0
+        XD_RET = EKI_Close("XmlDualMove")
+        XD_RET = EKI_Clear("XmlDualMove")
       ENDIF
     ENDIF
 
