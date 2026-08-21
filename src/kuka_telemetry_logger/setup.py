@@ -39,6 +39,8 @@ setup(
         'console_scripts': [
             'telemetry_logger = '
             'kuka_telemetry_logger.telemetry_logger_node:main',
+            'kuka_rviz_mirror = '
+            'kuka_telemetry_logger.rviz_mirror_node:main',
         ],
     },
 )
