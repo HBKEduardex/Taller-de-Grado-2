@@ -1,0 +1,142 @@
+========================================================================
+ESTUDIO COMPARATIVO KUKA  -  ANALISIS DE TELEMETRIA
+========================================================================
+
+Archivo analizado:
+  kuka_telemetry_20260820_160039.csv
+  /home/eduardex/Documents/TG2/logs/kuka_telemetry_20260820_160039.csv
+Fecha y hora del procesamiento: 2026-08-20 16:03:18
+Herramienta: analisis_comparativo_gui.py v1.0
+
+DATOS DE ADQUISICION
+------------------------------------------------------------------------
+Numero de muestras validas:   655
+Filas del CSV original:       655
+Duracion total registrada:    85.684 s
+Frecuencia efectiva:          7.633 Hz
+Periodo promedio:             131.016 ms
+Periodo mediano:              114.825 ms
+Desviacion del periodo:       30.011 ms
+Periodo minimo:               105.851 ms
+Periodo maximo:               210.274 ms
+
+LIMPIEZA DE DATOS
+------------------------------------------------------------------------
+Filas con timestamp no numerico descartadas: 0
+Filas con datos articulares invalidos descartadas: 0
+Filas con timestamp repetido descartadas:    0
+Timestamps reordenados:                      No
+
+MOVIMIENTO
+------------------------------------------------------------------------
+Movimiento detectado:     Si
+Inicio movimiento:        28.103 s
+Fin movimiento:           82.065 s
+Duracion movimiento:      53.961 s
+Recorrido articular maximo del ensayo: 1.571303 rad (90.0291 deg)
+Pico de velocidad articular:           0.491883 rad/s
+
+PROCESAMIENTO  (trazabilidad)
+------------------------------------------------------------------------
+Eje temporal:             columna 'receive_ros_time_ns', tiempo relativo en segundos
+Metodo de derivacion:     numpy.gradient(y, t) - diferencias finitas
+                          centradas con paso NO uniforme (tiempo real).
+                          velocidad = dq/dt, aceleracion = dv/dt, jerk = da/dt
+Filtrado aplicado:        Si
+Metodo de filtrado:       Savitzky-Golay (scipy.signal.savgol_filter, mode='interp')
+Parametros del filtrado:  window_length=7 muestras, polyorder=3
+Filtro en cada derivada:  Si
+SciPy disponible:         Si (v1.15.3)
+Umbral de velocidad para detectar movimiento: 0.010000 rad/s
+  (configurado: 0.010000 rad/s ; adaptativo: 2.0 % del pico)
+Umbral de recorrido para admitir movimiento:  0.008730 rad
+Muestras consecutivas minimas:                2
+Margen anadido al tramo detectado:            1 muestras
+Continuidad |dq|: calculada sobre las posiciones CRUDAS (sin filtrar).
+
+INTERVALO UTILIZADO PARA LAS METRICAS
+------------------------------------------------------------------------
+Intervalo de movimiento [28.103 s , 82.065 s]  (412 muestras)
+
+POSICION ARTICULAR  [deg]
+------------------------------------------------------------------------
+Eje       inicial        final       minima       maxima  recorrido abs
+A1         0.0000       0.0000     -16.2642      14.5783       111.3616
+A2       -90.0000     -90.0000     -90.0001     -54.9205       127.8661
+A3        90.0000      90.0000      90.0000     113.1603        69.3152
+A4        -0.0049      -0.0049      -0.0204      -0.0013         0.0483
+A5         0.0109      -0.0039      -0.0042      90.0222       270.7138
+A6         0.0000       0.0000     -23.1868      10.6778        67.7773
+
+METRICAS PRINCIPALES POR ARTICULACION
+------------------------------------------------------------------------
+A1:
+  Velocidad    [rad/s]   max_abs=0.389661  rms=0.095314  mean=0.000223  std=0.095314  min=-0.330054  max=0.389661
+  Aceleracion  [rad/s2]  max_abs=0.841560  rms=0.143084  mean=0.000575  std=0.143083  min=-0.701470  max=0.841560
+  Jerk         [rad/s3]  max_abs=2.166889  rms=0.453212  mean=-0.000306  std=0.453212  min=-2.166889  max=2.075391
+  Continuidad  [rad]     dq_max=0.060898  dq_rms=0.012342  dq_mean=0.004718  dq_std=0.011404
+
+A2:
+  Velocidad    [rad/s]   max_abs=0.256224  rms=0.073247  mean=0.000114  std=0.073247  min=-0.256224  max=0.230075
+  Aceleracion  [rad/s2]  max_abs=0.532647  rms=0.095330  mean=0.000125  std=0.095330  min=-0.532647  max=0.444887
+  Jerk         [rad/s3]  max_abs=1.558850  rms=0.310122  mean=0.000221  std=0.310122  min=-1.532559  max=1.558850
+  Continuidad  [rad]     dq_max=0.040057  dq_rms=0.009356  dq_mean=0.005417  dq_std=0.007628
+
+A3:
+  Velocidad    [rad/s]   max_abs=0.242173  rms=0.043312  mean=0.000038  std=0.043312  min=-0.242173  max=0.122928
+  Aceleracion  [rad/s2]  max_abs=0.524133  rms=0.067378  mean=-0.000007  std=0.067378  min=-0.524133  max=0.442505
+  Jerk         [rad/s3]  max_abs=1.426240  rms=0.214655  mean=-0.000139  std=0.214655  min=-1.426240  max=1.364970
+  Continuidad  [rad]     dq_max=0.037729  dq_rms=0.005610  dq_mean=0.002936  dq_std=0.004780
+
+A4:
+  Velocidad    [rad/s]   max_abs=0.000185  rms=0.000031  mean=-0.000000  std=0.000031  min=-0.000065  max=0.000185
+  Aceleracion  [rad/s2]  max_abs=0.000401  rms=0.000049  mean=0.000000  std=0.000049  min=-0.000341  max=0.000401
+  Jerk         [rad/s3]  max_abs=0.001044  rms=0.000158  mean=0.000000  std=0.000158  min=-0.001044  max=0.001030
+  Continuidad  [rad]     dq_max=0.000029  dq_rms=0.000004  dq_mean=0.000002  dq_std=0.000004
+
+A5:
+  Velocidad    [rad/s]   max_abs=0.491883  rms=0.147041  mean=-0.000103  std=0.147041  min=-0.491883  max=0.389349
+  Aceleracion  [rad/s2]  max_abs=1.040088  rms=0.158179  mean=0.000265  std=0.158179  min=-1.040088  max=0.716961
+  Jerk         [rad/s3]  max_abs=3.041499  rms=0.461800  mean=-0.000101  std=0.461800  min=-2.463638  max=3.041499
+  Continuidad  [rad]     dq_max=0.075466  dq_rms=0.018733  dq_mean=0.011469  dq_std=0.014812
+
+A6:
+  Velocidad    [rad/s]   max_abs=0.391134  rms=0.063438  mean=-0.000122  std=0.063438  min=-0.123435  max=0.391134
+  Aceleracion  [rad/s2]  max_abs=0.851006  rms=0.102684  mean=0.000052  std=0.102684  min=-0.727734  max=0.851006
+  Jerk         [rad/s3]  max_abs=2.206042  rms=0.322831  mean=0.000706  std=0.322831  min=-2.206042  max=2.067436
+  Continuidad  [rad]     dq_max=0.060734  dq_rms=0.008294  dq_mean=0.002871  dq_std=0.007781
+
+DATOS CARTESIANOS
+------------------------------------------------------------------------
+  X [mm]: inicial=525.294  final=674.678  min=440.095  max=720.662
+  Y [mm]: inicial=-0.000  final=-2.331  min=-132.061  max=144.321
+  Z [mm]: inicial=890.001  final=885.202  min=294.733  max=890.001
+  A [deg]: inicial=38.801  final=-0.000  min=-10.418  max=163.359
+  B [deg]: inicial=89.992  final=-0.009  min=-0.011  max=89.992
+  C [deg]: inicial=38.801  final=0.005  min=-10.442  max=163.318
+  (No se deriva velocidad angular del efector a partir de A/B/C:
+   requiere la transformacion cinematica correcta de esa
+   representacion de orientacion.)
+
+LIMITACIONES
+------------------------------------------------------------------------
+Indice completo de singularidad: NO calculado.
+  Se requiere el modelo cinematico / Jacobiano del KUKA KR6 R900
+  (parametros DH o URDF, dimensiones geometricas).  Con las columnas
+  disponibles en el CSV no existe informacion suficiente y no se
+  implementa ninguna formula arbitraria.
+
+Metricas que requieren medicion experimental externa (no se calculan
+a partir de la telemetria y no se inventan):
+  - Error de rectitud : requiere medicion experimental externa.
+  - Error angular : requiere medicion experimental externa.
+  - Error de cierre : requiere medicion experimental externa.
+  - Radio real de curvas : requiere medicion experimental externa.
+  - Error de colocacion : requiere medicion experimental externa.
+  - Repetibilidad fisica : requiere medicion experimental externa.
+  - Precision fisica : requiere medicion experimental externa.
+  - Tasa de exito experimental : requiere medicion experimental externa.
+
+========================================================================
+FIN DEL INFORME
+========================================================================
