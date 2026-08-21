@@ -5,14 +5,25 @@
 ANALIZADOR COMPARATIVO KUKA  -  KRL / MoveIt2
 ================================================================================
 
-Herramienta independiente (NO depende de ROS/ROS2) para procesar los CSV de
-telemetria del KUKA (kuka_telemetry_*.csv), calcular las metricas del estudio
-comparativo, generar las graficas y guardar los resultados.
+Herramienta para procesar los CSV de telemetria del KUKA
+(kuka_telemetry_*.csv), calcular las metricas del estudio comparativo, generar
+las graficas y guardar los resultados.
+
+El ANALISIS (seleccionar, procesar, graficar, guardar) sigue siendo totalmente
+INDEPENDIENTE de ROS/ROS2 y funciona en cualquier entorno.
+
+La unica excepcion es la funcion OPCIONAL "Probar con RViz", que reproduce un
+CSV ya procesado publicando sensor_msgs/msg/JointState en /fake_joint_states
+para que RViz muestre el ensayo grabado.  Solo esa funcion necesita ROS2
+(rclpy + sensor_msgs), y su import es diferido (lazy): si ROS2 no esta
+disponible, la GUI arranca igual y todo lo demas sigue funcionando; unicamente
+ese boton avisara de que falta el entorno ROS2.
 
 Ejecucion:
     python3 "scripts comparativo/analisis_comparativo_gui.py"
 
 Dependencias: pandas, numpy, matplotlib, tkinter.  scipy es OPCIONAL.
+ROS2 (rclpy, sensor_msgs) es OPCIONAL: solo para "Probar con RViz".
 
 El CSV seleccionado se abre SIEMPRE en modo lectura.  Nada se escribe hasta
 pulsar el boton "Guardar resultados", y solo dentro de:
@@ -21,9 +32,20 @@ pulsar el boton "Guardar resultados", y solo dentro de:
 """
 
 import os
+
+# DDS host <-> contenedor: RViz/ROS2 corren dentro de Docker y este Python en el
+# host.  El transporte por memoria compartida de FastDDS no cruza esa frontera,
+# asi que se fuerza UDPv4 y se permite el trafico fuera de localhost.  Debe
+# quedar definido ANTES de cualquier import de rclpy (que es lazy, al pulsar
+# "Probar con RViz").  Con setdefault, lo que el usuario exporte en la terminal
+# tiene prioridad y no se pisa.
+os.environ.setdefault("FASTDDS_BUILTIN_TRANSPORTS", "UDPv4")
+os.environ.setdefault("ROS_LOCALHOST_ONLY", "0")
+
 import sys
 import csv
 import math
+import time
 import subprocess
 import datetime
 import traceback
@@ -114,6 +136,45 @@ FIG_FILENAMES = {
     "cart_pos":    "07_posicion_cartesiana.png",
     "cart_ori":    "08_orientacion_cartesiana.png",
 }
+
+# --- Reproduccion en RViz (FUNCION OPCIONAL: lo unico que necesita ROS2) ------
+# Estos valores se copian EXACTAMENTE del nodo ya validado
+#   src/kuka_telemetry_logger/kuka_telemetry_logger/rviz_mirror_node.py
+# (DEFAULT_OUTPUT_TOPIC, DEFAULT_JOINT_NAMES, DEFAULT_QOS_DEPTH y su QoS
+# RELIABLE / VOLATILE / KEEP_LAST).  No se inventa ninguno.
+#
+# NO se publica directamente en /joint_states: ese topico ya tiene publicador
+# (el joint_state_publisher del visualizador, con source_list
+# ["/fake_joint_states"]).  Se alimenta /fake_joint_states y se reutiliza la
+# cadena existente:
+#     /fake_joint_states -> joint_state_publisher -> /joint_states -> RViz
+RVIZ_REPLAY_TOPIC = "/fake_joint_states"
+RVIZ_REPLAY_NODE_NAME = "kuka_csv_rviz_replay"
+RVIZ_REPLAY_QOS_DEPTH = 10
+RVIZ_REPLAY_JOINT_NAMES = [
+    "joint_a1",
+    "joint_a2",
+    "joint_a3",
+    "joint_a4",
+    "joint_a5",
+    "joint_a6",
+]
+# Cada cuantas muestras se refresca el texto de Estado durante la reproduccion
+# (no se actualiza en cada muestra para no cargar Tkinter).
+RVIZ_REPLAY_PROGRESS_EVERY = 100
+
+# Espera de descubrimiento DDS antes de arrancar la linea temporal: evita que
+# se pierda la muestra 0 porque el subscriber de /fake_joint_states todavia no
+# se ha emparejado con el publicador recien creado.  La espera es NO bloqueante
+# (Tk.after) y NO cuenta como tiempo de reproduccion.
+RVIZ_DISCOVERY_TIMEOUT_S = 2.0
+RVIZ_DISCOVERY_POLL_MS = 50
+
+ROS2_UNAVAILABLE_MESSAGE = (
+    "ROS2 no está disponible en este entorno.\n"
+    "Ejecute la herramienta desde una terminal donde se haya realizado\n"
+    "source /opt/ros/humble/setup.bash."
+)
 
 # Metricas de la matriz de estudio que NO pueden obtenerse de la telemetria CSV.
 EXTERNAL_METRICS = [
@@ -1436,6 +1497,21 @@ class ComparativeAnalyzerApp(tk.Tk):
         self.last_saved_folder = None
         self._canvases = []
 
+        # --- estado de la reproduccion en RViz (funcion opcional) ------------
+        self._rviz_playback_active = False
+        self._rviz_playback_index = 0
+        self._rviz_playback_start_monotonic = None
+        self._rviz_after_id = None
+        self._rviz_discovery_after_id = None
+        self._rviz_discovery_deadline = None
+        self._rviz_rclpy = None                  # modulo rclpy (lazy import)
+        self._rviz_jointstate_cls = None         # clase JointState (lazy import)
+        self._rviz_ros_node = None
+        self._rviz_publisher = None
+        self._rviz_rclpy_initialized_here = False
+        self._rviz_messages_published = 0
+        self._rviz_invalid_samples = 0
+
         self._build_widgets()
         self._reset_state(clear_file=True)
 
@@ -1543,6 +1619,9 @@ class ComparativeAnalyzerApp(tk.Tk):
         self.btn_plots = ttk.Button(action, text="Ver graficas",
                                     command=self.on_show_plots, state="disabled")
         self.btn_plots.pack(side="left")
+        self.btn_rviz = ttk.Button(action, text="Probar con RViz",
+                                   command=self.on_test_rviz, state="disabled")
+        self.btn_rviz.pack(side="left", padx=(8, 0))
         self.btn_save = ttk.Button(action, text="Guardar resultados",
                                    command=self.on_save, state="disabled")
         self.btn_save.pack(side="left", padx=(8, 0))
@@ -1685,6 +1764,9 @@ class ComparativeAnalyzerApp(tk.Tk):
         self.figures = {}
 
     def _reset_state(self, clear_file=False):
+        # Cambiar de CSV o limpiar detiene cualquier reproduccion en curso: no
+        # deben seguir saliendo muestras del ensayo anterior.
+        self._cancel_rviz_playback()
         self.result = None
         self.skipped_figures = []
         self.summary_text = ""
@@ -1701,6 +1783,7 @@ class ComparativeAnalyzerApp(tk.Tk):
 
         self.btn_save.configure(state="disabled")
         self.btn_plots.configure(state="disabled")
+        self.btn_rviz.configure(state="disabled")
         if clear_file:
             self.csv_path = None
             self.file_var.set("(ninguno)")
@@ -1784,6 +1867,7 @@ class ComparativeAnalyzerApp(tk.Tk):
         self.configure(cursor="")
         self.btn_save.configure(state="normal")
         self.btn_plots.configure(state="normal")
+        self.btn_rviz.configure(state="normal")
 
         if result.motion["detected"]:
             self._set_status("Procesamiento completado correctamente.", "#1b5e20")
@@ -1804,6 +1888,351 @@ class ComparativeAnalyzerApp(tk.Tk):
         if self.result is None:
             return
         self.notebook.select(self.plot_frames["position"])
+
+    # -- reproduccion en RViz (funcion OPCIONAL, solo visualizacion) ----------
+    #
+    #   CSV ya procesado -> self.result.q_rad [rad] -> sensor_msgs/JointState
+    #   -> /fake_joint_states -> joint_state_publisher -> /joint_states -> RViz
+    #
+    # Esta funcion NO controla el KUKA: no abre sockets TCP, no habla
+    # EthernetKRL / EKI, no publica target_json ni ningun comando, no usa
+    # MoveIt planning, ActionClients ni FollowJointTrajectory.  Es OFFLINE: no
+    # necesita el robot conectado, solo el CSV grabado y el visualizador.
+
+    def _ensure_rviz_publisher(self):
+        """
+        Prepara ROS2 la primera vez que se pulsa el boton (lazy import).
+
+        El import de rclpy / sensor_msgs se hace AQUI y no al principio del
+        archivo, para que la GUI arranque y el analisis funcione en entornos
+        sin ROS2.  Devuelve True si el publicador esta listo.
+        """
+        if self._rviz_publisher is not None:
+            return True
+
+        try:
+            import rclpy
+            from rclpy.qos import (
+                DurabilityPolicy,
+                HistoryPolicy,
+                QoSProfile,
+                ReliabilityPolicy,
+            )
+            from sensor_msgs.msg import JointState
+        except Exception as exc:  # noqa: BLE001 - la GUI nunca debe cerrarse
+            self._set_status("ROS2 no disponible: el analisis sigue funcionando.",
+                             "#ef6c00")
+            messagebox.showerror(
+                "ROS2 no disponible",
+                "%s\n\nDetalle: %s" % (ROS2_UNAVAILABLE_MESSAGE, exc))
+            return False
+
+        try:
+            if not rclpy.ok():
+                rclpy.init(args=None)
+                # Solo se apagara rclpy al cerrar si lo inicializo este script.
+                self._rviz_rclpy_initialized_here = True
+            node = rclpy.create_node(RVIZ_REPLAY_NODE_NAME)
+            # QoS identico al del rviz_mirror_node ya validado.
+            qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=RVIZ_REPLAY_QOS_DEPTH,
+            )
+            # UNICO publicador de esta herramienta.
+            publisher = node.create_publisher(JointState, RVIZ_REPLAY_TOPIC, qos)
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("No se pudo inicializar ROS2.", "#b71c1c")
+            messagebox.showerror(
+                "Error al inicializar ROS2",
+                "No se pudo crear el nodo o el publicador ROS2.\n\n%s\n\n%s"
+                % (exc, traceback.format_exc(limit=3)))
+            return False
+
+        self._rviz_rclpy = rclpy
+        self._rviz_jointstate_cls = JointState
+        self._rviz_ros_node = node
+        self._rviz_publisher = publisher
+        return True
+
+    def _validate_playback_data(self):
+        """Comprueba que el resultado procesado sirve para reproducir."""
+        res = self.result
+        if res is None:
+            return "No hay ningun CSV procesado."
+        if res.t is None or res.q_rad is None:
+            return "El resultado procesado no contiene tiempo o posiciones."
+        t = np.asarray(res.t, dtype=float)
+        q = np.asarray(res.q_rad, dtype=float)
+        if t.ndim != 1 or q.ndim != 2:
+            return "Las series de tiempo y posicion no tienen la forma esperada."
+        if q.shape[1] != 6:
+            return ("Cada muestra debe contener exactamente 6 articulaciones "
+                    "(se encontraron %d)." % q.shape[1])
+        if t.shape[0] != q.shape[0]:
+            return ("El numero de tiempos (%d) y de muestras articulares (%d) "
+                    "no coincide." % (t.shape[0], q.shape[0]))
+        if t.shape[0] < 1:
+            return "No hay ninguna muestra que reproducir."
+        return None
+
+    def _publish_rviz_sample(self, index):
+        """
+        Publica UNA muestra en /fake_joint_states.
+
+        Usa res.q_rad, que es la posicion articular CRUDA registrada convertida
+        de grados a radianes.  NO se usa res.q_used_rad (puede estar filtrada
+        para el analisis): se reproduce exactamente lo registrado, sin filtrar,
+        sin interpolar y sin suavizar.  Devuelve True si se publico.
+        """
+        q = np.asarray(self.result.q_rad[index], dtype=float)
+        if q.shape[0] != 6 or not np.all(np.isfinite(q)):
+            # Muestra invalida (NaN / Inf): se descarta, pero la reproduccion
+            # del resto del ensayo continua.
+            self._rviz_invalid_samples += 1
+            return False
+
+        msg = self._rviz_jointstate_cls()
+        # Tiempo de REPRODUCCION ROS2, no el timestamp original del KUKA. El
+        # timestamp registrado solo decide CUANDO se publica cada muestra.
+        msg.header.stamp = self._rviz_ros_node.get_clock().now().to_msg()
+        msg.name = list(RVIZ_REPLAY_JOINT_NAMES)
+        msg.position = [float(v) for v in q]
+        msg.velocity = []
+        msg.effort = []
+        self._rviz_publisher.publish(msg)
+        self._rviz_messages_published += 1
+        return True
+
+    def _schedule_rviz_sample(self):
+        """
+        Programa la siguiente muestra SIN acumular drift.
+
+        Cada muestra se compara contra el instante ABSOLUTO de reproduccion
+        (inicio_monotonico + t[i]), no contra el dt de la muestra anterior: un
+        retraso puntual de Tkinter se absorbe en la siguiente espera en vez de
+        arrastrarse hasta el final.  Asi un ensayo de 59.14 s dura ~59.14 s.
+        """
+        index = self._rviz_playback_index
+        target = self._rviz_playback_start_monotonic + float(self.result.t[index])
+        remaining = target - time.monotonic()
+        delay_ms = int(max(0.0, remaining) * 1000.0)
+        self._rviz_after_id = self.after(delay_ms, self._rviz_playback_step)
+
+    def _rviz_playback_step(self):
+        """Publica la muestra actual y programa la siguiente. No bloquea."""
+        self._rviz_after_id = None
+        if not self._rviz_playback_active or self.result is None:
+            return
+
+        total = int(np.asarray(self.result.t).shape[0])
+        index = self._rviz_playback_index
+        if index >= total:
+            self._finish_rviz_playback()
+            return
+
+        try:
+            self._publish_rviz_sample(index)
+        except Exception as exc:  # noqa: BLE001
+            self._cancel_rviz_playback()
+            self._set_status("Error durante la reproduccion en RViz.", "#b71c1c")
+            if self.result is not None:
+                self.btn_rviz.configure(state="normal")
+            messagebox.showerror(
+                "Error durante la reproduccion",
+                "Fallo al publicar la muestra %d de %d:\n\n%s"
+                % (index + 1, total, exc))
+            return
+
+        self._rviz_playback_index = index + 1
+
+        if (self._rviz_playback_index % RVIZ_REPLAY_PROGRESS_EVERY == 0
+                and self._rviz_playback_index < total):
+            self._set_status("Reproduciendo en RViz: %d / %d"
+                             % (self._rviz_playback_index, total), "#ef6c00")
+
+        if self._rviz_playback_index >= total:
+            self._finish_rviz_playback()
+        else:
+            self._schedule_rviz_sample()
+
+    def _cancel_rviz_playback(self):
+        """
+        Cancela la reproduccion Y la espera de descubrimiento pendientes.
+
+        Seguro de llamar siempre.  No deja callbacks huerfanos de Tk.after ni
+        de la fase de discovery ni de la linea temporal.
+        """
+        was_pending = False
+        for attr in ("_rviz_discovery_after_id", "_rviz_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id is not None:
+                was_pending = True
+                try:
+                    self.after_cancel(after_id)
+                except (tk.TclError, ValueError):
+                    pass
+            setattr(self, attr, None)
+        self._rviz_discovery_deadline = None
+        was_active = bool(getattr(self, "_rviz_playback_active", False))
+        self._rviz_playback_active = False
+        self._rviz_playback_index = 0
+        return was_active or was_pending
+
+    def _finish_rviz_playback(self):
+        """Cierra la reproduccion e informa del resultado."""
+        self._rviz_playback_active = False
+        self._rviz_after_id = None
+
+        elapsed = 0.0
+        if self._rviz_playback_start_monotonic is not None:
+            elapsed = time.monotonic() - self._rviz_playback_start_monotonic
+        recorded = 0.0
+        if self.result is not None and self.result.t is not None:
+            t = np.asarray(self.result.t, dtype=float)
+            if t.shape[0]:
+                recorded = float(t[-1] - t[0])
+
+        if self.result is not None:
+            self.btn_rviz.configure(state="normal")
+        self._set_status("Reproduccion RViz completada.", "#1b5e20")
+
+        detail = (
+            "Reproduccion RViz completada.\n\n"
+            "Muestras publicadas:      %d\n"
+            "Muestras invalidas:       %d\n"
+            "Duracion reproducida:     %.3f s\n"
+            "Duracion registrada:      %.3f s\n\n"
+            "Topico: %s\nTipo:   sensor_msgs/msg/JointState"
+            % (self._rviz_messages_published, self._rviz_invalid_samples,
+               elapsed, recorded, RVIZ_REPLAY_TOPIC))
+        if self._rviz_invalid_samples:
+            detail += ("\n\nLas muestras invalidas (NaN / Inf) no se publicaron; "
+                       "el resto del ensayo si se reprodujo.")
+        messagebox.showinfo("Reproduccion RViz completada", detail)
+
+    def on_test_rviz(self):
+        """Reproduce en RViz el registro COMPLETO del CSV ya procesado."""
+        if self.result is None:
+            messagebox.showwarning(
+                "Sin datos",
+                "Primero seleccione y procese un archivo CSV.")
+            return
+        if self._rviz_playback_active or self._rviz_discovery_after_id is not None:
+            return
+
+        problem = self._validate_playback_data()
+        if problem is not None:
+            messagebox.showerror("No se puede reproducir", problem)
+            return
+
+        if not self._ensure_rviz_publisher():
+            return
+
+        # El boton queda deshabilitado durante el discovery Y durante toda la
+        # reproduccion; se reactiva en _finish_rviz_playback.
+        self.btn_rviz.configure(state="disabled")
+        self._set_status("Preparando reproduccion RViz...", "#ef6c00")
+        self._rviz_discovery_deadline = time.monotonic() + RVIZ_DISCOVERY_TIMEOUT_S
+        self._wait_for_rviz_subscriber()
+
+    def _wait_for_rviz_subscriber(self):
+        """
+        Espera NO bloqueante a que DDS empareje al subscriber, con timeout.
+
+        Sin esto, la muestra 0 puede publicarse antes de que el subscriber de
+        /fake_joint_states se haya descubierto y perderse.  Se sondea
+        get_subscription_count() cada RVIZ_DISCOVERY_POLL_MS con Tk.after (no
+        se usa time.sleep: no debe bloquearse Tkinter).
+
+        Este tiempo de espera NO forma parte de la reproduccion: el reloj de la
+        linea temporal se arranca despues, en _start_rviz_playback().
+        """
+        self._rviz_discovery_after_id = None
+
+        # Si mientras esperabamos se limpio el estado o se cambio de CSV, no
+        # hay nada que reproducir: _reset_state ya dejo el boton deshabilitado.
+        if self.result is None or self._rviz_publisher is None:
+            self._rviz_discovery_deadline = None
+            return
+
+        try:
+            subscriber_count = self._rviz_publisher.get_subscription_count()
+        except Exception:  # noqa: BLE001 - la GUI nunca debe cerrarse
+            subscriber_count = 0
+
+        if subscriber_count >= 1:
+            self._start_rviz_playback()
+            return
+
+        if (self._rviz_discovery_deadline is None
+                or time.monotonic() >= self._rviz_discovery_deadline):
+            messagebox.showwarning(
+                "Sin suscriptores",
+                "No se detectó ningún suscriptor en /fake_joint_states.\n"
+                "La reproducción comenzará igualmente.")
+            self._start_rviz_playback()
+            return
+
+        self._rviz_discovery_after_id = self.after(
+            RVIZ_DISCOVERY_POLL_MS, self._wait_for_rviz_subscriber)
+
+    def _start_rviz_playback(self):
+        """
+        Arranca la linea temporal, una vez terminado el discovery.
+
+        El reloj de reproduccion se fija AQUI y no al pulsar el boton, para que
+        lo que haya tardado DDS (0 ms, 200 ms, 500 ms...) no desplace el
+        ensayo: un CSV de 59.14 s dura ~59.14 s en cualquier caso.
+        """
+        self._rviz_discovery_deadline = None
+        if self.result is None or self._rviz_publisher is None:
+            return
+
+        # Se reproduce el REGISTRO COMPLETO (indices 0..N-1), no analysis_slice
+        # ni la ventana de movimiento: asi se ve tambien el tiempo quieto antes
+        # y despues del movimiento.
+        total = int(np.asarray(self.result.t).shape[0])
+        self._rviz_playback_active = True
+        self._rviz_playback_index = 0
+        self._rviz_messages_published = 0
+        self._rviz_invalid_samples = 0
+        self.btn_rviz.configure(state="disabled")
+        self._set_status("Reproduciendo CSV en RViz...", "#ef6c00")
+
+        self._rviz_playback_start_monotonic = time.monotonic()
+        # La primera muestra sale inmediatamente; las siguientes se programan
+        # segun los tiempos reales registrados en self.result.t.
+        self._rviz_playback_step()
+        if total <= 0:
+            self._finish_rviz_playback()
+
+    def _shutdown_rviz_ros(self):
+        """Destruye el nodo y apaga rclpy solo si lo inicializo este script."""
+        node = self._rviz_ros_node
+        self._rviz_publisher = None
+        self._rviz_ros_node = None
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._rviz_rclpy_initialized_here and self._rviz_rclpy is not None:
+            try:
+                self._rviz_rclpy.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        self._rviz_rclpy_initialized_here = False
+
+    def on_close(self):
+        """Cierre limpio: cancelar playback, cerrar ROS2 y destruir la ventana."""
+        self._cancel_rviz_playback()
+        self._shutdown_rviz_ros()
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
 
     def on_save(self):
         if self.result is None:
@@ -1993,6 +2422,8 @@ def main():
             "No se pudo iniciar la interfaz grafica (¿entorno sin pantalla?).\n"
             "Detalle: %s\n" % exc)
         return 1
+    # Cierre limpio: cancela la reproduccion y apaga ROS2 si se inicializo.
+    app.protocol("WM_DELETE_WINDOW", app.on_close)
     app.mainloop()
     return 0
 
