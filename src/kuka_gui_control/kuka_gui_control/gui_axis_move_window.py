@@ -18,7 +18,9 @@ from typing import Dict, Optional
 
 try:
     from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-    from PyQt5.QtGui import QColor, QFont, QPalette
+    from PyQt5.QtGui import (
+        QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap,
+    )
     from PyQt5.QtWidgets import (
         QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox,
         QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -200,6 +202,56 @@ QPushButton {{
 }}
 QPushButton:hover {{ border-color: {ACCENT}; }}
 """
+
+BTN_GRIPPER = f"""
+QPushButton {{
+    background-color: {PANEL_BG};
+    color: {TEXT_PRI};
+    border: 1px solid {BORDER_CLR};
+    border-radius: 6px;
+    padding: 8px 18px;
+    font-weight: bold;
+}}
+QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
+QPushButton:disabled {{ background-color: {BORDER_CLR}; color: {TEXT_SEC}; }}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Gripper glyphs
+# ---------------------------------------------------------------------------
+
+def _make_gripper_icon(is_open: bool, color: str) -> QIcon:
+    """
+    Dibujar un icono sencillo de garra abierta/cerrada con QPainter.
+
+    Se pinta en memoria con PyQt5, que ya es el framework de la GUI: no
+    hay ficheros de recursos, ni paquetes, ni dependencias nuevas.
+    """
+    size = 22
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidth(2)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+
+    # Cuerpo y vástago
+    painter.drawLine(6, 3, 16, 3)
+    painter.drawLine(11, 3, 11, 8)
+
+    # Dedos: separados si está abierta, juntos si está cerrada
+    spread = 7 if is_open else 2
+    painter.drawLine(11 - spread, 8, 11, 8)
+    painter.drawLine(11 + spread, 8, 11, 8)
+    painter.drawLine(11 - spread, 8, 11 - spread, 18)
+    painter.drawLine(11 + spread, 8, 11 + spread, 18)
+
+    painter.end()
+    return QIcon(pixmap)
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +617,38 @@ class AxisMoveGuiWindow(QMainWindow):
 
         main_layout.addLayout(btn_layout)
 
+        # ── Garra (acción puntual, no mueve el robot) ─────────────────
+        gripper_layout = QHBoxLayout()
+
+        lbl_gripper = QLabel('Garra:')
+        lbl_gripper.setStyleSheet(f'color: {TEXT_SEC}; font-weight: bold;')
+        gripper_layout.addWidget(lbl_gripper)
+
+        self._btn_gripper_open = QPushButton('  Abrir garra')
+        self._btn_gripper_open.setIcon(_make_gripper_icon(True, TEXT_PRI))
+        self._btn_gripper_open.setStyleSheet(BTN_GRIPPER)
+        self._btn_gripper_open.setCursor(Qt.PointingHandCursor)
+        self._btn_gripper_open.setToolTip(
+            'Envía GripperCommand=0 (abrir) con EnableMove=false.\n'
+            'No modifica los targets articulares ni cartesianos.'
+        )
+        self._btn_gripper_open.clicked.connect(self._on_gripper_open)
+        gripper_layout.addWidget(self._btn_gripper_open)
+
+        self._btn_gripper_close = QPushButton('  Cerrar garra')
+        self._btn_gripper_close.setIcon(_make_gripper_icon(False, TEXT_PRI))
+        self._btn_gripper_close.setStyleSheet(BTN_GRIPPER)
+        self._btn_gripper_close.setCursor(Qt.PointingHandCursor)
+        self._btn_gripper_close.setToolTip(
+            'Envía GripperCommand=1 (cerrar) con EnableMove=false.\n'
+            'No modifica los targets articulares ni cartesianos.'
+        )
+        self._btn_gripper_close.clicked.connect(self._on_gripper_close)
+        gripper_layout.addWidget(self._btn_gripper_close)
+
+        gripper_layout.addStretch(1)
+        main_layout.addLayout(gripper_layout)
+
         # ── Enable Move toggle ───────────────────────────────────────
         enable_layout = QHBoxLayout()
         self._chk_enable_move = QCheckBox('ENABLE MOVE')
@@ -748,6 +832,40 @@ class AxisMoveGuiWindow(QMainWindow):
         self._send_hold_timer = QTimer(self)
         self._send_hold_timer.timeout.connect(self._send_hold_tick)
         self._send_hold_timer.start(200)  # re-send every 200ms
+
+    def _on_gripper_open(self):
+        """Abrir garra: un único comando con GripperCommand=0."""
+        self._send_gripper_command(0)
+
+    def _on_gripper_close(self):
+        """Cerrar garra: un único comando con GripperCommand=1."""
+        self._send_gripper_command(1)
+
+    def _send_gripper_command(self, value: int):
+        """
+        Envío puntual de la garra por el MISMO camino TCP/IP de siempre.
+
+        No toca A1-A6 ni X-C: solo pide un gripper_command para el JSON que
+        se construye a continuación, fuerza EnableMove=false en ese envío y
+        restaura el estado del checkbox justo después. El nuevo Seq lo da
+        build_target_json() a través de next_seq(), igual que SEND, y el
+        propio modelo vuelve a -1 al consumirlo: no hacen falta ni
+        temporizadores ni hilos.
+        """
+        previous_enable = self._model.get_enable_move()
+        self._model.set_enable_move(False)
+        self._model.request_gripper_command(value)
+        json_str = self._model.build_target_json()
+        self._model.set_enable_move(previous_enable)
+
+        self._bridge.publish_command(json_str)
+
+        if self._show_raw_json and hasattr(self, '_txt_command'):
+            try:
+                pretty = json.dumps(json.loads(json_str), indent=2)
+                self._txt_command.setPlainText(pretty)
+            except Exception:
+                self._txt_command.setPlainText(json_str)
 
     def _on_auto(self):
         """Start automatic publishing at auto_publish_hz."""

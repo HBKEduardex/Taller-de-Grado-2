@@ -116,6 +116,11 @@ class JointCommandModel:
         # Enable move flag
         self._enable_move: bool = enable_move_default
 
+        # Garra: petición puntual de un solo uso. build_target_json() la
+        # consume y la devuelve a -1, de modo que un click produce
+        # exactamente UN comando con 0/1 y todo lo demás sigue llevando -1.
+        self._pending_gripper_command: int = -1
+
         # Mode for node: 'manual_send' or 'auto'
         self._node_mode: str = 'manual_send'
         
@@ -289,6 +294,22 @@ class JointCommandModel:
     def get_enable_move(self) -> bool:
         return self._enable_move
 
+    # ── Gripper (acción puntual) ─────────────────────────────────────
+
+    def request_gripper_command(self, value: int) -> None:
+        """
+        Pedir una acción de garra para el PRÓXIMO build_target_json().
+
+        0 = abrir, 1 = cerrar. Cualquier otro valor se ignora: -1 no se
+        "pide", es el estado normal al que el modelo vuelve solo.
+        """
+        if value in (0, 1):
+            self._pending_gripper_command = int(value)
+
+    def get_pending_gripper_command(self) -> int:
+        """Valor que llevará el próximo comando (-1 = ninguna acción)."""
+        return self._pending_gripper_command
+
     # ── Sequence ─────────────────────────────────────────────────────
 
     def next_seq(self) -> int:
@@ -309,12 +330,17 @@ class JointCommandModel:
             JSON string with seq, source, mode, enable_move, and A1-A6.
         """
         seq = self.next_seq()
+        # La garra se consume aquí: este comando se lleva el 0/1 y el modelo
+        # vuelve inmediatamente a -1, sin temporizadores ni hilos.
+        gripper_command = self._pending_gripper_command
+        self._pending_gripper_command = -1
         payload = {
             'seq': seq,
             'source': 'kuka_gui_control',
             'node_mode': self._node_mode,
             'mode': self._target_mode,
             'enable_move': self._enable_move,
+            'gripper_command': gripper_command,
             'axis_target': {},
             'cartesian_target': {}
         }
