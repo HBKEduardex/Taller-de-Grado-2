@@ -5,18 +5,46 @@
 &PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
 DEF XmlDualMove( )
 
+; ============================================================================
+; XmlDualMove - robot-interpreter side of the ROS2 link
+; ============================================================================
+; THIS PROGRAM CONTAINS NO EthernetKRL CALLS.
+;
+; SPS.SUB owns the EKI channel: it opens it, drains the receive buffer on
+; every cycle and publishes the last valid command into the XD_ mailbox in
+; $CONFIG.DAT.  This program only reads that mailbox.  Consequences:
+;
+;   * Telemetry no longer depends on this program running.  DEMO26 or any
+;     other KRL program can be selected and Ubuntu keeps receiving data.
+;   * The receive buffer is never blocked by the robot interpreter, which is
+;     what used to fill the EKI memory and raise EKI01280.
+;   * The manual warns against reading one channel from both interpreters
+;     (EKI_Get empties the memory), so all reading stays in the SPS.
+;
+; SAFETY MODEL
+;   * On start-up the current mailbox Seq is taken as a BASELINE and is never
+;     executed.  A command that arrived while DEMO26 was running can never
+;     move the robot just because this program was selected afterwards.
+;   * A Seq is marked handled BEFORE acting on it, so a given Seq can move
+;     the robot or drive the gripper at most once.  The Ubuntu heartbeat
+;     deliberately repeats the same Seq and is therefore inert.
+;   * Gripper and motion are independent: EnableMove=FALSE with
+;     GripperCommand 0 or 1 performs a gripper-only action.
+;
+; ORDER OF EXECUTION for a new Seq:  validate -> gripper -> motion.
+; ============================================================================
+
 ;FOLD Declaration
   INT i
-  INT seq
   INT cmdSeq
-  INT lastMoveSeq
+  INT cmdSeqCheck
+  INT handledSeq
+  INT gripperCmd
 
-  DECL EKI_STATUS RET
   DECL AXIS axisTarget
   DECL E6POS cartesianTarget
 
-  CHAR cmdMode[64]
-
+  BOOL snapshotOK
   BOOL isAxisMode
   BOOL isCartesianMode
 
@@ -25,7 +53,6 @@ DEF XmlDualMove( )
   BOOL readyToMove
   BOOL moveExecuted
   BOOL deltaOK
-  BOOL cmdReceived
 
   REAL targetA1
   REAL targetA2
@@ -66,27 +93,23 @@ DEF XmlDualMove( )
   ;ENDFOLD (BASISTECH INI)
 
   ;FOLD USER INI
-    ;Receives target from Ubuntu/ROS2 using EthernetKRL.
+    ;Reads targets from the XD_ mailbox published by SPS.SUB.
     ;Supports BOTH Axis (A1-A6) and Cartesian (X,Y,Z,A,B,C) modes.
-    ;Movement block must be enabled only by the responsible operator.
+    ;Movement must be enabled by the responsible operator via the bridge.
   ;ENDFOLD (USER INI)
 ;ENDFOLD (INI)
 
 ;FOLD Initialize data
-  FOR i=(1) TO (64)
-    cmdMode[i]=0
-  ENDFOR
-
-  seq = 0
   cmdSeq = 0
-  lastMoveSeq = -1
+  cmdSeqCheck = 0
+  gripperCmd = -1
 
+  snapshotOK = FALSE
   enableMove = FALSE
   limitsOK = FALSE
   readyToMove = FALSE
   moveExecuted = FALSE
   deltaOK = FALSE
-  cmdReceived = FALSE
   isAxisMode = FALSE
   isCartesianMode = FALSE
 
@@ -124,54 +147,78 @@ DEF XmlDualMove( )
 
   axisTarget = $AXIS_ACT
   cartesianTarget = $POS_ACT
+
+  ; ---- BASELINE ----
+  ; Whatever is sitting in the mailbox right now belongs to the past: it may
+  ; have arrived while DEMO26 was running, or be the last command of an
+  ; earlier ROS2 session.  Treating it as already handled is what stops this
+  ; program from moving the moment it is selected.
+  handledSeq = XD_CMD_SEQ
+
+  XD_MOVE_READY = FALSE
+  XD_LIMITS_OK = FALSE
+  XD_DELTA_OK = FALSE
 ;ENDFOLD (Initialize data)
 
 ;FOLD Configure motion parameters
   $BWDSTART = FALSE
   $OV_PRO = 5
-  
+
   ; Default TOOL and BASE (modify if your setup requires specific ones)
   $TOOL = $NULLFRAME
   $BASE = $NULLFRAME
 ;ENDFOLD (Configure motion parameters)
 
-RET=EKI_Init("XmlDualMove")
-RET=EKI_Open("XmlDualMove")
-
 ;FOLD Move command loop
 LOOP
 
-  seq = seq + 1
+  ;FOLD Snapshot the mailbox
+    ; Seqlock read: XD_CMD_SEQ is written LAST by the SPS, so reading it
+    ; before and after the payload detects a publish that landed mid-copy.
+    ; A torn snapshot is simply discarded and retried next cycle.
+    snapshotOK = FALSE
 
-  ;FOLD Receive target command from Ubuntu
-    cmdReceived = FALSE
-    RET=EKI_CheckBuffer("XmlDualMove", "Command/Seq")
-    IF RET.Buff > 0 THEN
-      RET=EKI_GetInt("XmlDualMove","Command/Seq",cmdSeq)
-      RET=EKI_GetString("XmlDualMove","Command/Mode",cmdMode[])
-      RET=EKI_GetBool("XmlDualMove","Command/EnableMove",enableMove)
+    IF XD_CMD_UPDATING == FALSE THEN
+      cmdSeqCheck = XD_CMD_SEQ
 
-      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A1",targetA1)
-      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A2",targetA2)
-      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A3",targetA3)
-      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A4",targetA4)
-      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A5",targetA5)
-      RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A6",targetA6)
+      targetA1 = XD_TARGET_A1
+      targetA2 = XD_TARGET_A2
+      targetA3 = XD_TARGET_A3
+      targetA4 = XD_TARGET_A4
+      targetA5 = XD_TARGET_A5
+      targetA6 = XD_TARGET_A6
 
-      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@X",targetX)
-      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Y",targetY)
-      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Z",targetZ)
-      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@A",targetA)
-      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@B",targetB)
-      RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@C",targetC)
-      
-      cmdReceived = TRUE
-      
-      ; Determine mode based on first char 'A' for AxisTarget, 'C' for CartesianTarget
-      isAxisMode = (cmdMode[1] == "A") OR (cmdMode[1] == "a")
-      isCartesianMode = (cmdMode[1] == "C") OR (cmdMode[1] == "c")
+      targetX = XD_TARGET_X
+      targetY = XD_TARGET_Y
+      targetZ = XD_TARGET_Z
+      targetA = XD_TARGET_A
+      targetB = XD_TARGET_B
+      targetC = XD_TARGET_C
+
+      enableMove = XD_ENABLE_MOVE
+      gripperCmd = XD_GRIPPER_COMMAND
+      isAxisMode = XD_AXIS_MODE
+      isCartesianMode = XD_CART_MODE
+
+      IF (XD_CMD_UPDATING == FALSE) AND (XD_CMD_SEQ == cmdSeqCheck) THEN
+        cmdSeq = cmdSeqCheck
+        snapshotOK = TRUE
+      ENDIF
     ENDIF
-  ;ENDFOLD (Receive target command from Ubuntu)
+  ;ENDFOLD (Snapshot the mailbox)
+
+  ;FOLD Follow a mailbox reset
+    ; XD_CMD_SEQ == 0 is the sentinel the SPS writes when it (re)opens the
+    ; channel: the mailbox holds no command at all.  There is nothing from
+    ; the past to protect against, so the handled marker follows it down.
+    ; Without this, a fresh ROS2 session that restarts its counter at 1 could
+    ; have its very first command silently ignored.
+    IF snapshotOK == TRUE THEN
+      IF cmdSeq == 0 THEN
+        handledSeq = 0
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Follow a mailbox reset)
 
   ;FOLD Calculate error target - actual
     IF isAxisMode THEN
@@ -182,7 +229,7 @@ LOOP
       errorA5 = targetA5 - $AXIS_ACT.A5
       errorA6 = targetA6 - $AXIS_ACT.A6
     ENDIF
-    
+
     IF isCartesianMode THEN
       errorX = targetX - $POS_ACT.X
       errorY = targetY - $POS_ACT.Y
@@ -234,10 +281,12 @@ LOOP
         limitsOK = FALSE
       ENDIF
     ENDIF
-    
+
     ; Note: Cartesian limits are harder to define safely without a known workspace.
     ; Native KUKA reachability will prevent unsafe poses, but you can add boundary boxes here if needed.
   ;ENDFOLD (Validate limits)
+
+  XD_LIMITS_OK = limitsOK
 
   ;FOLD Validate delta (max jump per command)
     deltaOK = TRUE
@@ -285,7 +334,9 @@ LOOP
     ENDIF
   ;ENDFOLD (Validate delta)
 
-  ;FOLD Build target from GUI
+  XD_DELTA_OK = deltaOK
+
+  ;FOLD Build target from mailbox
     IF isAxisMode THEN
       axisTarget = $AXIS_ACT
       axisTarget.A1 = targetA1
@@ -295,7 +346,7 @@ LOOP
       axisTarget.A5 = targetA5
       axisTarget.A6 = targetA6
     ENDIF
-    
+
     IF isCartesianMode THEN
       cartesianTarget = $POS_ACT
       cartesianTarget.X = targetX
@@ -305,7 +356,7 @@ LOOP
       cartesianTarget.B = targetB
       cartesianTarget.C = targetC
     ENDIF
-  ;ENDFOLD (Build target from GUI)
+  ;ENDFOLD (Build target from mailbox)
 
   ;FOLD Determine readyToMove
     readyToMove = FALSE
@@ -313,101 +364,72 @@ LOOP
     IF enableMove == TRUE THEN
       IF limitsOK == TRUE THEN
         IF deltaOK == TRUE THEN
-          IF cmdReceived == TRUE THEN
+          IF snapshotOK == TRUE THEN
             readyToMove = TRUE
           ENDIF
         ENDIF
       ENDIF
     ENDIF
+
+    IF XD_EKI_ACTIVE == FALSE THEN
+      readyToMove = FALSE
+    ENDIF
+    IF (isAxisMode == FALSE) AND (isCartesianMode == FALSE) THEN
+      readyToMove = FALSE
+    ENDIF
+
+    XD_MOVE_READY = readyToMove
   ;ENDFOLD (Determine readyToMove)
 
-  ;FOLD Execute movement
-    IF readyToMove == TRUE THEN
+  ;FOLD Act on a NEW sequence only
+    ; A Seq is acted on exactly once.  handledSeq is advanced BEFORE the
+    ; action, so nothing can replay it: not the heartbeat, not a restart.
+    IF snapshotOK == TRUE THEN
       IF cmdSeq > 0 THEN
-        IF cmdSeq <> lastMoveSeq THEN
-          
-          ; Execute movement based on mode
-          IF isAxisMode THEN
-            PTP axisTarget
-          ENDIF
-          
-          IF isCartesianMode THEN
-            PTP cartesianTarget
-          ENDIF
-          
-          lastMoveSeq = cmdSeq
-          moveExecuted = TRUE
+        IF cmdSeq <> handledSeq THEN
+          IF XD_EKI_ACTIVE == TRUE THEN
 
-          ; Drain stale commands that accumulated during movement
-          RET=EKI_CheckBuffer("XmlDualMove", "Command/Seq")
-          WHILE RET.Buff > 0
-            RET=EKI_GetInt("XmlDualMove","Command/Seq",cmdSeq)
-            RET=EKI_GetString("XmlDualMove","Command/Mode",cmdMode[])
-            RET=EKI_GetBool("XmlDualMove","Command/EnableMove",enableMove)
-            
-            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A1",targetA1)
-            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A2",targetA2)
-            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A3",targetA3)
-            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A4",targetA4)
-            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A5",targetA5)
-            RET=EKI_GetReal("XmlDualMove","Command/AxisTarget/@A6",targetA6)
-            
-            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@X",targetX)
-            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Y",targetY)
-            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@Z",targetZ)
-            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@A",targetA)
-            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@B",targetB)
-            RET=EKI_GetReal("XmlDualMove","Command/CartesianTarget/@C",targetC)
-            
-            RET=EKI_CheckBuffer("XmlDualMove", "Command/Seq")
-          ENDWHILE
-          lastMoveSeq = cmdSeq
+            handledSeq = cmdSeq
 
+            ;FOLD Gripper action
+              ; -1 = do nothing (the bridge default), 0 = open, 1 = close.
+              ; The SPS has already rejected any other value.
+              IF gripperCmd == 0 THEN
+                GRPg_SetStateAndCheck(1, 1, 0.2, 1)
+              ENDIF
+              IF gripperCmd == 1 THEN
+                GRPg_SetStateAndCheck(1, 2, 0.2, 1)
+              ENDIF
+            ;ENDFOLD (Gripper action)
+
+            ;FOLD Motion
+              IF readyToMove == TRUE THEN
+                IF isAxisMode THEN
+                  PTP axisTarget
+                ENDIF
+
+                IF isCartesianMode THEN
+                  PTP cartesianTarget
+                ENDIF
+
+                moveExecuted = TRUE
+                XD_LAST_MOVE_SEQ = cmdSeq
+                XD_MOVE_EXECUTED = TRUE
+              ENDIF
+            ;ENDFOLD (Motion)
+
+          ENDIF
         ENDIF
       ENDIF
-    ELSE
-      moveExecuted = FALSE
     ENDIF
-  ;ENDFOLD (Execute movement)
-
-  ;FOLD Send actual robot position to Ubuntu
-    RET=EKI_SetInt("XmlDualMove","Robot/Seq",seq)
-    
-    IF isCartesianMode THEN
-      RET=EKI_SetString("XmlDualMove","Robot/Mode","CartesianTarget")
-    ELSE
-      RET=EKI_SetString("XmlDualMove","Robot/Mode","AxisTarget")
-    ENDIF
-
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A1",$AXIS_ACT.A1)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A2",$AXIS_ACT.A2)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A3",$AXIS_ACT.A3)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A4",$AXIS_ACT.A4)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A5",$AXIS_ACT.A5)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/AxisActual/@A6",$AXIS_ACT.A6)
-
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@X",$POS_ACT.X)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@Y",$POS_ACT.Y)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@Z",$POS_ACT.Z)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@A",$POS_ACT.A)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@B",$POS_ACT.B)
-    RET=EKI_SetReal("XmlDualMove","Robot/Data/PositionActual/@C",$POS_ACT.C)
-
-    RET=EKI_SetInt("XmlDualMove","Robot/Status",1)
-    RET=EKI_SetBool("XmlDualMove","Robot/MoveReady",readyToMove)
-    RET=EKI_SetBool("XmlDualMove","Robot/LimitsOK",limitsOK)
-    RET=EKI_SetBool("XmlDualMove","Robot/DeltaOK",deltaOK)
-    RET=EKI_SetBool("XmlDualMove","Robot/MoveExecuted",moveExecuted)
-
-    RET=EKI_Send("XmlDualMove","Robot")
-  ;ENDFOLD (Send actual robot position to Ubuntu)
+  ;ENDFOLD (Act on a NEW sequence only)
 
   WAIT SEC 0.1
 
 ENDLOOP
 ;ENDFOLD (Move command loop)
 
-RET=EKI_Close("XmlDualMove")
-RET=EKI_Clear("XmlDualMove")
+; No EKI_Close here: the channel belongs to SPS.SUB and must survive this
+; program being deselected.  That is the whole point of the redesign.
 
 END

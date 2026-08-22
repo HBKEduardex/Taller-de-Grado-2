@@ -37,6 +37,18 @@ DEF  SPS ( )
   DECL REAL xd_tempB
   DECL REAL xd_tempC
 
+  ; Protected snapshot of the Cartesian position.  Locals only - nothing
+  ; here has to be visible outside the Submit interpreter.
+  DECL E6POS xd_posSnapshot
+  DECL BOOL xd_cartValid
+
+  DECL REAL xd_posX
+  DECL REAL xd_posY
+  DECL REAL xd_posZ
+  DECL REAL xd_posA
+  DECL REAL xd_posB
+  DECL REAL xd_posC
+
   ;ENDFOLD (USER DECL)
   ;ENDFOLD (DECLARATIONS)
   ;FOLD INI
@@ -95,6 +107,16 @@ DEF  SPS ( )
   xd_tempA = 0.0
   xd_tempB = 0.0
   xd_tempC = 0.0
+
+  ; xd_posSnapshot is intentionally NOT seeded from $POS_ACT here: that
+  ; read is exactly the one that can fail, and INI has no protection.
+  xd_cartValid = FALSE
+  xd_posX = 0.0
+  xd_posY = 0.0
+  xd_posZ = 0.0
+  xd_posA = 0.0
+  xd_posB = 0.0
+  xd_posC = 0.0
 
   xd_packetCounter = -1
   xd_sentMoveSeq = -1
@@ -501,6 +523,78 @@ DEF  SPS ( )
         XD_SEND_COUNTER = XD_SEND_COUNTER + 1
         IF XD_SEND_COUNTER >= XD_SEND_DIVISOR THEN
           XD_SEND_COUNTER = 0
+
+          ; ---- Protected acquisition of the Cartesian position ----
+          ; $POS_ACT is not stored, it is derived from $AXIS_ACT through
+          ; $TOOL and $BASE.  When a KRL program is deselected those frames
+          ; can be left undefined and then READING $POS_ACT is itself the
+          ; runtime error - that is the instant SmartHMI shows XYZABC blank.
+          ; Checking XD_RET afterwards cannot help: the error is raised while
+          ; the argument is being evaluated, so EKI_SetReal is never entered
+          ; and never returns a status.  Without ON_ERROR_PROCEED the Submit
+          ; interpreter stops right there.
+          ;
+          ; ON_ERROR_PROCEED suppresses the error of the SINGLE statement
+          ; that follows it and skips that statement.  It must sit directly
+          ; in front of a plain assignment - it has no effect on IF, FOR,
+          ; WHILE, LOOP, REPEAT, SWITCH or GOTO.  $ERR is per interpreter,
+          ; so this is the Submit's own error slot, not the robot's.
+          ;
+          ; One struct copy yields all six components from the SAME instant.
+          xd_cartValid = TRUE
+          ON_ERROR_PROCEED
+          xd_posSnapshot = $POS_ACT
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+
+          ; The six components come out of the local snapshot, never out of
+          ; $POS_ACT again.  A struct copy can carry uninitialised members
+          ; through without failing, so each extraction is guarded too; past
+          ; this point the EKI block only ever sees plain initialised REALs.
+          ON_ERROR_PROCEED
+          xd_posX = xd_posSnapshot.X
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+          ON_ERROR_PROCEED
+          xd_posY = xd_posSnapshot.Y
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+          ON_ERROR_PROCEED
+          xd_posZ = xd_posSnapshot.Z
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+          ON_ERROR_PROCEED
+          xd_posA = xd_posSnapshot.A
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+          ON_ERROR_PROCEED
+          xd_posB = xd_posSnapshot.B
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+          ON_ERROR_PROCEED
+          xd_posC = xd_posSnapshot.C
+          IF $ERR.NUMBER <> 0 THEN
+            ERR_CLEAR($ERR)
+            xd_cartValid = FALSE
+          ENDIF
+
+          ; An unusable Cartesian position is NOT an EthernetKRL fault, so
+          ; xd_channelOK, XD_EKI_ACTIVE, RX and the mailbox are left alone.
+          ; The round is simply consumed and produces no Robot frame, which
+          ; is why Robot/Seq must not advance either.
+          IF xd_cartValid THEN
           XD_SEND_SEQ = XD_SEND_SEQ + 1
           xd_sendOK = TRUE
           xd_sentMoveSeq = XD_LAST_MOVE_SEQ
@@ -567,42 +661,42 @@ DEF  SPS ( )
           ENDIF
         ENDIF
         IF xd_sendOK THEN
-          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@X", $POS_ACT.X)
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@X", xd_posX)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
           ENDIF
         ENDIF
         IF xd_sendOK THEN
-          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Y", $POS_ACT.Y)
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Y", xd_posY)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
           ENDIF
         ENDIF
         IF xd_sendOK THEN
-          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Z", $POS_ACT.Z)
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@Z", xd_posZ)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
           ENDIF
         ENDIF
         IF xd_sendOK THEN
-          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@A", $POS_ACT.A)
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@A", xd_posA)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
           ENDIF
         ENDIF
         IF xd_sendOK THEN
-          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@B", $POS_ACT.B)
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@B", xd_posB)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
           ENDIF
         ENDIF
         IF xd_sendOK THEN
-          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@C", $POS_ACT.C)
+          XD_RET = EKI_SetReal("XmlDualMove", "Robot/Data/PositionActual/@C", xd_posC)
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_sendOK = FALSE
             xd_channelOK = FALSE
@@ -664,6 +758,7 @@ DEF  SPS ( )
             XD_MOVE_EXECUTED = FALSE
           ENDIF
         ENDIF
+          ENDIF
         ENDIF
       ENDIF
 
