@@ -34,6 +34,7 @@ except ImportError as e:
     ) from e
 
 from kuka_gui_control.joint_command_model import JointCommandModel, AXES, CARTESIAN_AXES
+from kuka_gui_control.trajectory_panel import TrajectorySequencePanel
 
 # ---------------------------------------------------------------------------
 # Style constants
@@ -700,6 +701,19 @@ class AxisMoveGuiWindow(QMainWindow):
 
             main_layout.addWidget(info_group)
 
+        # ── Secuencias de trayectorias (capa AÑADIDA) ────────────────
+        # Widget compartido con la GUI dual. Reutiliza el mismo modelo, el
+        # mismo RosAxisMoveBridge (y por tanto el mismo nodo ROS2) y las
+        # mismas funciones de envío que ya usan SEND y los botones de garra.
+        self._trajectory_panel = TrajectorySequencePanel(
+            model=self._model,
+            kuka_bridge=self._bridge,
+            config=self._config,
+            joint_send_fn=self._validate_and_send,
+            gripper_send_fn=self._send_gripper_command,
+        )
+        main_layout.addWidget(self._trajectory_panel)
+
         self._stack.addWidget(page)
         self._refresh_table()
         self._refresh_inputs()
@@ -1101,6 +1115,8 @@ class AxisMoveGuiWindow(QMainWindow):
             self._send_hold_timer.stop()
         if self._feedback_timer:
             self._feedback_timer.stop()
+        if getattr(self, '_trajectory_panel', None) is not None:
+            self._trajectory_panel.shutdown()
         if self._bridge.is_running:
             self._bridge.stop()
         event.accept()

@@ -84,6 +84,19 @@ DEFAULT_CONFIG = {
     'feedback_timeout_sec':   2.0,
     'show_raw_json':          True,
     'show_raw_xml':           True,
+
+    # ── Secuencias de trayectorias (capa AÑADIDA) ────────────────────
+    # Carpeta donde se guardan los .json generados. Vacío = resolución
+    # automática: <raíz del repositorio>/trajectories, nunca dentro de
+    # install/. También se puede forzar con KUKA_TRAJECTORIES_DIR.
+    'trajectories_dir':                     '',
+    'trajectory_generation_timeout_sec':    60.0,
+    'trajectory_arrival_tolerance_deg':     0.5,
+    'trajectory_resend_period_sec':         0.5,
+    'trajectory_point_timeout_sec':         15.0,
+    'trajectory_min_point_period_sec':      0.2,
+    'trajectory_gripper_settle_sec':        2.0,
+    'trajectory_max_delta_deg':             10.0,
 }
 
 
@@ -116,6 +129,16 @@ _SCALAR_PARAMS = {
     'feedback_timeout_sec': 'feedback_timeout_sec',
     'show_raw_json':        'show_raw_json',
     'show_raw_xml':         'show_raw_xml',
+
+    # Secuencias de trayectorias (capa AÑADIDA)
+    'trajectories_dir':                  'trajectories_dir',
+    'trajectory_generation_timeout_sec': 'trajectory_generation_timeout_sec',
+    'trajectory_arrival_tolerance_deg':  'trajectory_arrival_tolerance_deg',
+    'trajectory_resend_period_sec':      'trajectory_resend_period_sec',
+    'trajectory_point_timeout_sec':      'trajectory_point_timeout_sec',
+    'trajectory_min_point_period_sec':   'trajectory_min_point_period_sec',
+    'trajectory_gripper_settle_sec':     'trajectory_gripper_settle_sec',
+    'trajectory_max_delta_deg':          'trajectory_max_delta_deg',
 }
 
 

@@ -65,3 +65,42 @@ kuka_gui_dual_node:
     feedback_timeout_sec: 2.0
     show_raw_json: true
     show_raw_xml: true
+
+    # ── Secuencias de trayectorias (capa AÑADIDA) ─────────────────────
+    # Carpeta donde la GUI guarda los .json generados por MoveIt2.
+    # Vacío = resolución automática a <raíz del repositorio>/trajectories,
+    # que con este checkout es:
+    #     ~/Documents/TG2/trajectories
+    # Nunca se escribe dentro de install/. Se puede forzar también con la
+    # variable de entorno KUKA_TRAJECTORIES_DIR.
+    trajectories_dir: ""
+
+    # Espera máxima de la respuesta de MoveIt2 tras pulsar ENVIAR PUNTOS.
+    trajectory_generation_timeout_sec: 60.0
+
+    # ── Ejecución física de un archivo (ENVIAR TRAYECTORIA) ───────────
+    # Salto máximo admitido entre puntos consecutivos (y desde la posición
+    # real al primer punto). Es independiente del límite de SEND manual.
+    trajectory_max_delta_deg: 10.0
+
+    # Tolerancia de llegada por articulación antes de pasar al siguiente
+    # punto intermedio.
+    trajectory_arrival_tolerance_deg: 0.5
+
+    # Reenvío del mismo objetivo mientras no se confirma la llegada. Debe
+    # quedar por debajo de command_timeout_sec del bridge (2.0 s), igual
+    # que el "hold" que ya usa el botón SEND.
+    trajectory_resend_period_sec: 0.5
+
+    # Tiempo máximo para alcanzar UN punto intermedio antes de abortar.
+    trajectory_point_timeout_sec: 15.0
+
+    # Suelo de tiempo entre puntos consecutivos. Protege la memoria de
+    # recepción de EthernetKRL, que cierra la conexión a los 16 elementos
+    # sin leer (el guard del bridge ya corta en 10).
+    trajectory_min_point_period_sec: 0.2
+
+    # Espera tras ordenar una acción de garra. El protocolo actual no
+    # publica estado de garra, así que se respeta un tiempo de asentamiento
+    # en lugar de inventar una confirmación que no existe.
+    trajectory_gripper_settle_sec: 2.0

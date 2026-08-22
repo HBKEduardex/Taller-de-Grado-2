@@ -61,6 +61,20 @@ DEFAULT_CONFIG = {
     'show_raw_json':          True,
     'show_raw_xml':           True,
 
+    # ── Secuencias de trayectorias (capa AÑADIDA) ────────────────────
+    # Carpeta donde se guardan los .json generados. Vacío = resolución
+    # automática: <raíz del repositorio>/trajectories, nunca dentro de
+    # install/. Se puede forzar con la variable de entorno
+    # KUKA_TRAJECTORIES_DIR sin tocar este archivo.
+    'trajectories_dir':                     '',
+    'trajectory_generation_timeout_sec':    60.0,
+    'trajectory_arrival_tolerance_deg':     0.5,
+    'trajectory_resend_period_sec':         0.5,
+    'trajectory_point_timeout_sec':         15.0,
+    'trajectory_min_point_period_sec':      0.2,
+    'trajectory_gripper_settle_sec':        2.0,
+    'trajectory_max_delta_deg':             10.0,
+
     'home_joints_deg':        dict(DEFAULT_HOME),
     'soft_limits_deg': {
         a: list(DEFAULT_LIMITS[a]) for a in AXES

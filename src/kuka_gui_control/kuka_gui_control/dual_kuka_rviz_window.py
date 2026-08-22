@@ -34,6 +34,7 @@ except ImportError as e:
     ) from e
 
 from kuka_gui_control.dual_command_model import DualCommandModel
+from kuka_gui_control.trajectory_panel import TrajectorySequencePanel
 from kuka_gui_control.joint_command_model import AXES, CARTESIAN_AXES
 
 # ---------------------------------------------------------------------------
@@ -768,6 +769,19 @@ class DualKukaRvizWindow(QMainWindow):
 
             main_layout.addWidget(info_group)
 
+        # ── Secuencias de trayectorias (capa AÑADIDA) ────────────────
+        # Mismo widget que la GUI original. Reutiliza este modelo, este
+        # RosAxisMoveBridge (y por tanto el MISMO nodo ROS2 y su executor)
+        # y la función de garra que ya existía.
+        self._trajectory_panel = TrajectorySequencePanel(
+            model=self._model,
+            kuka_bridge=self._kuka_bridge,
+            config=self._config,
+            joint_send_fn=self._send_trajectory_joint_command,
+            gripper_send_fn=self._send_gripper_command,
+        )
+        main_layout.addWidget(self._trajectory_panel)
+
         self._stack.addWidget(page)
         self._refresh_table()
         self._refresh_inputs()
@@ -1083,6 +1097,32 @@ class DualKukaRvizWindow(QMainWindow):
         self._send_hold_timer = QTimer(self)
         self._send_hold_timer.timeout.connect(self._send_hold_tick)
         self._send_hold_timer.start(200)  # re-send every 200ms
+
+    def _send_trajectory_joint_command(self):
+        """
+        Envío articular usado SOLO por el ejecutor de trayectorias.
+
+        Es el MISMO camino que SEND hacia el KUKA real: mismo modelo, mismo
+        build_target_json(), mismo RosAxisMoveBridge y mismo XML del bridge.
+        Lo único que no hace es replicar cada punto intermedio hacia
+        RViz/MoveIt2: la previsualización tiene su propio botón y su propio
+        tópico, y reenviar cientos de objetivos al planificador solo
+        produciría rechazos BUSY.
+
+        No modifica send_joint_command() ni ninguna ruta existente.
+        """
+        if not self._model.publish_joints_to_kuka:
+            return
+
+        target_json = self._model.build_target_json()
+        self._kuka_bridge.publish_command(target_json)
+
+        if self._show_raw_json and hasattr(self, '_txt_command'):
+            try:
+                pretty = json.dumps(json.loads(target_json), indent=2)
+                self._txt_command.setPlainText(pretty)
+            except Exception:
+                self._txt_command.setPlainText(target_json)
 
     def _on_gripper_open(self):
         """Abrir garra: un único comando con GripperCommand=0."""
@@ -1426,6 +1466,8 @@ class DualKukaRvizWindow(QMainWindow):
             self._send_hold_timer.stop()
         if self._feedback_timer:
             self._feedback_timer.stop()
+        if getattr(self, '_trajectory_panel', None) is not None:
+            self._trajectory_panel.shutdown()
         if self._kuka_bridge.is_running:
             self._kuka_bridge.stop()
         event.accept()

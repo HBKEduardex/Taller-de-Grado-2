@@ -51,3 +51,13 @@ kuka_gui_control:
     feedback_timeout_sec: 2.0
     show_raw_json: true
     show_raw_xml: true
+
+    # ── Secuencias de trayectorias (capa AÑADIDA) ─────────────────────
+    # NOTA: gui_axis_move_node.py usa su propio DEFAULT_CONFIG y NO lee
+    # este YAML (comportamiento previo, no se ha cambiado). Para mover la
+    # carpeta de trayectorias en esta GUI usa la variable de entorno:
+    #
+    #     export KUKA_TRAJECTORIES_DIR=/ruta/escribible/trajectories
+    #
+    # Sin ella se resuelve a <raíz del repositorio>/trajectories, que con
+    # este checkout es ~/Documents/TG2/trajectories. Nunca install/.

@@ -34,6 +34,7 @@ Sistema de control para el robot KUKA KR6 R900 mediante una interfaz gráfica en
 13. [Función Cartesiana / Mundo](#13-función-cartesiana--mundo)
 14. [Problemas Comunes](#14-problemas-comunes)
 15. [Notas Importantes](#15-notas-importantes)
+16. [Secuencias de Trayectorias](#16-secuencias-de-trayectorias)
 
 ---
 
@@ -108,6 +109,10 @@ El flujo de información se divide de la siguiente manera para el **Modo Dual**:
 | `/kuka_bridge/joint_command_deg` | `std_msgs/Float64MultiArray` | Target A1-A6 (en grados) enviado de la GUI Dual a RViz. |
 | `/kuka_bridge/joint_state_deg` | `std_msgs/Float64MultiArray` | Feedback A1-A6 (en grados) proveniente de MoveIt. |
 | `/move_action` | `MoveGroupAction` | Acción que MoveIt recibe para planificar y ejecutar. |
+| `/kuka_moveit/trajectory_generation/request_json` | `std_msgs/String` (JSON) | **GUI → MoveIt2.** P1…PN + eventos de garra en UNA solicitud. QoS Reliable. |
+| `/kuka_moveit/trajectory_generation/result_json` | `std_msgs/String` (JSON) | **MoveIt2 → GUI.** Segmentos T1, T2, T3… con sus puntos intermedios. QoS Reliable. |
+| `/kuka_moveit/trajectory_preview/request_json` | `std_msgs/String` (JSON) | **GUI → RViz.** Archivo a previsualizar. Solo RViz. QoS Reliable. |
+| `/kuka_moveit/trajectory_preview/status_json` | `std_msgs/String` (JSON) | **MoveIt2 → GUI.** Estado de la previsualización. QoS Reliable. |
 
 ---
 
@@ -249,3 +254,116 @@ Para poder operar el KUKA en modo Cartesiano, se requiere el archivo `XmlDualMov
 
 - Los ángulos de MoveIt2 trabajan internamente en **radianes**, pero la GUI y el nodo traductor están configurados para operar externamente en **grados**. Todas las entradas y salidas de tópicos personalizados en ROS2 usan grados por conveniencia humana.
 - KUKA utiliza convenciones Euler (A, B, C) que corresponden a (Rz, Ry, Rx) y que pueden diferir de cómo MoveIt representa cuaterniones, por lo cual los nodos traductores de este repositorio incluyen matemática específica (`transform_utils.py`) para esta corrección.
+
+---
+
+## 16. Secuencias de Trayectorias
+
+Capa **añadida** sobre el sistema existente. Permite crear, recibir,
+almacenar, previsualizar y ejecutar secuencias de trayectorias sin cambiar
+nada de lo que ya funcionaba: Axis Move, cartesiano, jog, HOME, límites,
+DDS, TCP/IP, EKI, Submit, SPS, KRL, RViz y MoveIt siguen intactos.
+
+Disponible en **ambas GUIs** (original y dual), mediante un widget
+compartido, así que la lógica no está duplicada.
+
+### 16.1 Flujo completo
+
+```text
+KUKA real
+ -> Submit Interpreter (SPS.SUB) / TCP-IP
+ -> AxisActual
+ -> SET P1...PN
+ -> ENVIAR PUNTOS
+ -> ROS2
+ -> contenedor MoveIt2
+ -> T1, T2, T3...
+ -> GUI
+ -> trajectories/*.json
+```
+
+A partir del archivo guardado, dos caminos **mutuamente separados**:
+
+```text
+trajectories/*.json          trajectories/*.json
+ -> PROBAR TRAYECTORIA        -> ENVIAR TRAYECTORIA
+ -> RViz únicamente           -> bridge TCP/IP existente
+                              -> KUKA real
+```
+
+### 16.2 Controles
+
+```text
+SET   Puntos: N   SET ABRIR GARRA   SET CERRAR GARRA   LIMPIAR
+ENVIAR PUNTOS (N)   PROBAR TRAYECTORIA   ENVIAR TRAYECTORIA   DETENER
+(•) Manual   ( ) Automático
+estado + log temporal
+```
+
+- **SET** captura `AxisActual` A1–A6 **real** del KUKA (no los campos de la
+  GUI, no el target, no RViz, no XYZABC). Solo en memoria: **no escribe en
+  disco**.
+- **SET ABRIR/CERRAR GARRA** *programa* un evento anclado al último punto.
+  **No mueve la garra.** Estado inicial siempre `open`.
+- **ENVIAR PUNTOS** publica UNA solicitud con todos los puntos. Exige ≥ 2.
+- **PROBAR TRAYECTORIA** reproduce en RViz. **Nunca alcanza al KUKA.**
+- **ENVIAR TRAYECTORIA** ejecuta físicamente el archivo guardado, respetando
+  `safe_mode`, `allow_motion_commands` y el checkbox `ENABLE MOVE`.
+- **Manual** se detiene al final de cada **segmento** (no de cada punto
+  intermedio) y pregunta CONTINUAR / CANCELAR. **Por defecto: Manual.**
+- **Automático** encadena todos los segmentos; ante un error aborta.
+
+### 16.3 Carpeta `trajectories/`
+
+```text
+/home/eduardex/Documents/TG2/trajectories
+```
+
+Configurable con `trajectories_dir` en `config/gui_dual_kuka_rviz.yaml` o con
+la variable de entorno `KUKA_TRAJECTORIES_DIR`. **Nunca dentro de
+`install/`.** Formato JSON, un archivo por secuencia:
+
+```text
+trajectory_sequence_20260822_153501.json
+```
+
+La trayectoria se guarda **tal cual llega**: no se eliminan puntos, no se
+reinterpola, no se modifican tiempos y no se suaviza nada.
+
+### 16.4 Nodo ROS2
+
+Los cuatro publishers/subscribers nuevos **viven en el nodo ROS2 que ya
+existía** (el del `RosAxisMoveBridge`, dentro de su executor). No se crea
+ningún nodo nuevo ni uno por ventana, así que no reaparecen los nodos
+homónimos ni el `Publisher count: 2`.
+
+### 16.5 ⚠️ Limitación real del protocolo KRL/EKI
+
+> [!IMPORTANT]
+> `XmlDualMove.src` ejecuta **un `PTP` de parada exacta por cada `Seq`
+> nuevo**, con `WAIT SEC 0.1` por vuelta de bucle y `$OV_PRO = 5`. Además,
+> la memoria de recepción de EthernetKRL **cierra la conexión** a los 16
+> elementos sin leer, y `Robot/LastMoveSeq` **no está** en el bloque `SEND`
+> de `XmlDualMove.xml` (solo `Robot/MoveExecuted`, que es un pulso booleano
+> sin número de secuencia asociado).
+>
+> Consecuencias, sin haber tocado nada del lado KUKA:
+>
+> - Una trayectoria densa se ejecuta como **N movimientos punto a punto con
+>   parada completa**, no como un movimiento continuo mezclado.
+> - `time_from_start` se **conserva en el archivo** pero **no puede usarse**
+>   para marcar el ritmo: el tiempo lo impone el controlador.
+> - `velocities_rad_s` y `accelerations_rad_s2` se guardan, pero el
+>   protocolo actual no las transporta al robot.
+> - La llegada a cada punto se confirma con `AxisActual` + el acuse de
+>   recibo `Robot/RxCounter`, no con `MoveExecuted` por `Seq`.
+>
+> **No se ha modificado KRL, EKI, SPS ni el Submit Interpreter.** Levantar
+> esta limitación exigiría cambios del lado del controlador que quedan
+> deliberadamente fuera de alcance.
+
+### 16.6 Documentación detallada
+
+Contrato JSON completo, esquema del archivo guardado, validaciones, pacing,
+manejo de errores y módulos nuevos:
+[`src/kuka_gui_control/README.md` § 13](src/kuka_gui_control/README.md).
