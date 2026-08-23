@@ -278,6 +278,7 @@ estado + log temporal
 | **SET ABRIR GARRA** | Programa `{"at_point": "Pn", "action": "open"}` | **No mueve la garra** |
 | **SET CERRAR GARRA** | Programa `{"at_point": "Pn", "action": "close"}` | **No mueve la garra** |
 | **LIMPIAR** | Vacía el buffer temporal | — |
+| **SET VEL. 5%** | Captura el mismo `AxisActual` que SET | Marca el segmento entrante como PTP articular reducido |
 | **ENVIAR PUNTOS (N)** | Publica UNA solicitud con todos los puntos y eventos | No manda punto por punto; exige ≥ 2 puntos |
 | **PROBAR TRAYECTORIA** | Reproduce un archivo en RViz | **Nunca alcanza al KUKA.** No activa EnableMove, no llama al sender TCP/IP, no mueve la garra real |
 | **ENVIAR TRAYECTORIA** | Ejecuta físicamente un archivo ya guardado | No genera nada nuevo, no vuelve a llamar a MoveIt |
@@ -304,6 +305,19 @@ P1 = [A1,A2,A3,A4,A5,A6]
 P2 = [...]
 P3 = [...]
 ```
+
+Hay dos perfiles de ejecución KUKA, configurables sin modificar MoveIt2:
+
+```yaml
+trajectory_kuka_ptp_velocity_normal_pct: 30.0
+trajectory_kuka_ptp_velocity_reduced_pct: 5.0
+```
+
+`SET` asigna 30 % al movimiento que termina en el punto capturado y
+`SET VEL. 5%` asigna 5 %. Por ejemplo, P3 capturado con el botón reducido
+produce `T2: P2 -> P3` a PTP 5 %. P1 no tiene tramo entrante dentro de la
+secuencia. El botón reducido usa solamente `AxisActual A1…A6`; no consulta
+ni valida coordenadas cartesianas.
 
 Se **rechaza** la captura, con mensaje claro en pantalla, si:
 
@@ -516,13 +530,19 @@ Contenido del archivo:
   "generated_at_date": "2026-08-22",
   "generated_at_time": "15:35:01",
   "source": "kuka_gui_control",
-  "source_points": [ { "id": "P1", "joints_deg": [...], "captured_at": "…" } ],
+  "source_points": [
+    {
+      "id": "P1", "joints_deg": [...], "captured_at": "…",
+      "incoming_kuka_ptp_velocity_pct": 30.0
+    }
+  ],
   "joint_names": [ "joint_a1", "…" ],
   "gripper": { "initial_state": "open", "events": [ … ] },
   "planner_metadata": { … },
   "segments": [
     {
       "id": "T1", "from_point": "P1", "to_point": "P2", "duration_sec": 2.0,
+      "execution_profile": { "kuka_ptp_velocity_pct": 5.0 },
       "trajectory_points": [
         {
           "positions_rad":        [...],
@@ -602,6 +622,10 @@ Estado esperado de vuelta:
 
 No genera nada nuevo y no vuelve a llamar a MoveIt: se ejecuta exactamente
 el archivo guardado, usando `positions_deg` para el comando físico.
+`execution_profile.kuka_ptp_velocity_pct` sólo configura la velocidad
+programada del PTP en el KUKA; no cambia `JointTrajectory`, posiciones,
+velocidades, aceleraciones, densidad ni `time_from_start`. Los archivos
+anteriores que no tienen `execution_profile` usan 30 % por defecto.
 
 **Preflight** — rechaza antes de mover si:
 
@@ -616,13 +640,19 @@ el archivo guardado, usando `positions_deg` para el comando físico.
 ```text
 TrajectoryExecutor
   -> model.set_target(A1..A6)          (JointCommandModel / DualCommandModel)
+  -> trajectory_ptp_velocity_pct       (solo ENVIAR TRAYECTORIA)
   -> función de envío de la ventana    (la misma que usa SEND)
   -> RosAxisMoveBridge.publish_command()
   -> /kuka/axis_move/target_json
   -> eki_axis_move_node
   -> build_axis_move_command_xml()
-  -> TCP/XML -> KUKA
+  -> Command/TrajectoryPtpVelocityPct
+  -> TCP/XML -> SPS -> mailbox XD_ -> XmlDualMove.src -> PTP
 ```
+
+SEND manual no añade `trajectory_ptp_velocity_pct`; el XML/mailbox usa 0.0
+como marcador de «no intervenir» y conserva el comportamiento no-trayectoria.
+Los porcentajes explícitos se validan en `(0, 100]` antes de mover.
 
 **Pacing** — un punto cada vez. Un punto se da por hecho solo cuando se
 cumplen las tres cosas:
@@ -752,18 +782,39 @@ porque no puede provocar movimiento físico.
 ### 13.16 Limitación conocida del protocolo KRL/EKI
 
 `XmlDualMove.src` ejecuta **un `PTP` de parada exacta por cada `Seq` nuevo**,
-con `WAIT SEC 0.1` por vuelta de bucle y `$OV_PRO = 5`. En consecuencia:
+con `WAIT SEC 0.1` por vuelta de bucle. En consecuencia:
 
 - una trayectoria densa de MoveIt se ejecuta como **N movimientos punto a
   punto con parada completa en cada uno**, no como un movimiento continuo
   mezclado;
 - `time_from_start` se **conserva en el archivo** pero **no puede usarse**
   para marcar el ritmo: el tiempo lo impone el controlador;
-- `velocities_rad_s` y `accelerations_rad_s2` se guardan pero el protocolo
-  actual no las transporta.
+- `velocities_rad_s` y `accelerations_rad_s2` se guardan pero no se usan para
+  fijar la velocidad programada del PTP.
 
-Esto **no se ha modificado**: no se ha tocado KRL, ni EKI, ni SPS, ni el
-Submit Interpreter. Ver el apartado correspondiente del README general.
+Para el estudio comparativo se mantienen estas condiciones operativas:
+
+```text
+SmartPad Program Override = 50 %
+SmartPad Jog Override     = 10 %
+Trayectoria NORMAL        = KUKA PTP programado 30 %
+Trayectoria REDUCED       = KUKA PTP programado 5 %
+```
+
+`XmlDualMove.src` no asigna `$OV_PRO`: respeta el Program Override definido
+por el operador en el SmartPad. El Jog Override de 10 % no se usa para la
+ejecución automática.
+
+El 5 % es una aproximación empírica obtenida de la telemetría articular del
+ensayo KRL `test10_vel50.csv`, realizado con Program Override 50 %. En ese
+ensayo los tramos SLIN a 0.03 m/s mostraron aproximadamente el 17.5 % de la
+magnitud de velocidad articular observada en los SPTP programados al 30 %.
+Por eso se usa PTP 5 % como condición articular reducida para comparar; no
+significa ni afirma que 5 % sea igual a 0.03 m/s.
+
+La parada exacta por punto, el `WAIT SEC 0.1`, el pacing, `RxCounter`, la
+tolerancia de llegada y los reenvíos permanecen sin cambios. No se añadió
+SLIN, blending, streaming ni dependencia cartesiana a la trayectoria.
 
 ---
 

@@ -48,6 +48,10 @@
 			<!-- Garra: -1 = nada, 0 = abrir, 1 = cerrar.
 			     Only XmlDualMove.src acts on it; the SPS just stores it. -->
 			<ELEMENT Tag="Command/GripperCommand" Type="INT"/>
+
+			<!-- 0 = comando no-trayectoria; (0,100] = velocidad PTP articular
+			     programada por ENVIAR TRAYECTORIA. -->
+			<ELEMENT Tag="Command/TrajectoryPtpVelocityPct" Type="REAL"/>
 		</XML>
 	</RECEIVE>
 	<SEND>

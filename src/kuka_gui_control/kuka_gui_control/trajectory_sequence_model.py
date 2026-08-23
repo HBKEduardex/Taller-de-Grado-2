@@ -57,6 +57,9 @@ GRIPPER_COMMAND_VALUE = {'open': 0, 'close': 1}
 
 DEFAULT_PLANNER_MODE: str = 'moveit_base'
 
+DEFAULT_KUKA_PTP_VELOCITY_NORMAL_PCT: float = 30.0
+DEFAULT_KUKA_PTP_VELOCITY_REDUCED_PCT: float = 5.0
+
 
 # ---------------------------------------------------------------------------
 # Utilidades numéricas
@@ -89,7 +92,7 @@ class SequencePoint:
     """Un punto P_n capturado con SET desde AxisActual."""
 
     __slots__ = ('point_id', 'joints_deg', 'cartesian_diagnostic',
-                 'captured_at')
+                 'captured_at', 'incoming_kuka_ptp_velocity_pct')
 
     def __init__(
         self,
@@ -97,12 +100,16 @@ class SequencePoint:
         joints_deg: List[float],
         cartesian_diagnostic: Optional[Dict[str, float]] = None,
         captured_at: Optional[str] = None,
+        incoming_kuka_ptp_velocity_pct: float =
+            DEFAULT_KUKA_PTP_VELOCITY_NORMAL_PCT,
     ):
         self.point_id = point_id
         self.joints_deg = [float(v) for v in joints_deg]
         self.cartesian_diagnostic = cartesian_diagnostic
         self.captured_at = captured_at or datetime.now().isoformat(
             timespec='seconds')
+        self.incoming_kuka_ptp_velocity_pct = float(
+            incoming_kuka_ptp_velocity_pct)
 
     def to_request_dict(self) -> dict:
         """Forma exigida por el contrato de solicitud a MoveIt."""
@@ -117,6 +124,8 @@ class SequencePoint:
             'id': self.point_id,
             'joints_deg': [round(v, 6) for v in self.joints_deg],
             'captured_at': self.captured_at,
+            'incoming_kuka_ptp_velocity_pct':
+                self.incoming_kuka_ptp_velocity_pct,
         }
         if self.cartesian_diagnostic:
             # Diagnóstico OPCIONAL. Nunca se usa para planificar ni ejecutar.
@@ -131,7 +140,10 @@ class SequencePoint:
             f'{name}={value:.2f}'
             for name, value in zip(AXES, self.joints_deg)
         )
-        return f'{self.point_id} seteado: {joints}'
+        return (
+            f'{self.point_id} seteado: {joints} | '
+            f'PTP entrante={self.incoming_kuka_ptp_velocity_pct:g}%'
+        )
 
 
 class GripperEvent:
@@ -219,6 +231,8 @@ class TrajectorySequenceModel:
         self,
         axis_actual: Optional[Dict[str, float]],
         position_actual: Optional[Dict[str, float]] = None,
+        incoming_kuka_ptp_velocity_pct: float =
+            DEFAULT_KUKA_PTP_VELOCITY_NORMAL_PCT,
     ) -> Tuple[bool, str]:
         """
         Capturar un punto desde el AxisActual REAL recibido del KUKA.
@@ -239,6 +253,13 @@ class TrajectorySequenceModel:
                 'AxisActual no está disponible.'
             )
 
+        if (not is_finite_number(incoming_kuka_ptp_velocity_pct)
+                or not 0.0 < float(incoming_kuka_ptp_velocity_pct) <= 100.0):
+            return False, (
+                'La velocidad PTP entrante debe ser mayor que 0 y menor o '
+                'igual que 100 %: no se capturó el punto.'
+            )
+
         joints: List[float] = []
         for axis in AXES:
             value = axis_actual.get(axis)
@@ -255,7 +276,13 @@ class TrajectorySequenceModel:
 
         point_id = f'P{len(self._points) + 1}'
         cartesian = self._sanitize_cartesian(position_actual)
-        point = SequencePoint(point_id, joints, cartesian)
+        point = SequencePoint(
+            point_id,
+            joints,
+            cartesian,
+            incoming_kuka_ptp_velocity_pct=
+                float(incoming_kuka_ptp_velocity_pct),
+        )
         self._points.append(point)
         self._log_lines.append(point.short_log())
         return True, point.short_log()
@@ -528,6 +555,10 @@ def build_storage_document(
     """
     generated_at = datetime.now()
     joint_names = list(result_payload.get('joint_names', MOVEIT_JOINT_NAMES))
+    incoming_velocity_by_point = {
+        point.point_id: point.incoming_kuka_ptp_velocity_pct
+        for point in sequence.points
+    }
 
     segments_out: List[dict] = []
     total_points = 0
@@ -577,11 +608,22 @@ def build_storage_document(
         total_duration += duration
         total_points += len(points_out)
 
+        to_point = segment.get('to_point')
+        incoming_velocity = incoming_velocity_by_point.get(to_point)
+        if incoming_velocity is None and seg_index + 1 < sequence.point_count:
+            incoming_velocity = sequence.points[
+                seg_index + 1].incoming_kuka_ptp_velocity_pct
+        if incoming_velocity is None:
+            incoming_velocity = DEFAULT_KUKA_PTP_VELOCITY_NORMAL_PCT
+
         segments_out.append({
             'id': seg_id,
             'from_point': segment.get('from_point'),
-            'to_point': segment.get('to_point'),
+            'to_point': to_point,
             'duration_sec': duration,
+            'execution_profile': {
+                'kuka_ptp_velocity_pct': float(incoming_velocity),
+            },
             'trajectory_points': points_out,
         })
 

@@ -251,6 +251,21 @@ def validate_sequence_document(document) -> Tuple[bool, str]:
                  else None) or f'T{index + 1}'
         if not isinstance(segment, dict):
             return False, f'Segmento {label} inválido.'
+
+        execution_profile = segment.get('execution_profile')
+        if execution_profile is not None:
+            if not isinstance(execution_profile, dict):
+                return False, (
+                    f'Segmento {label}: execution_profile inválido.'
+                )
+            velocity_pct = execution_profile.get('kuka_ptp_velocity_pct')
+            if (not is_finite_number(velocity_pct)
+                    or not 0.0 < float(velocity_pct) <= 100.0):
+                return False, (
+                    f'Segmento {label}: kuka_ptp_velocity_pct debe ser mayor '
+                    f'que 0 y menor o igual que 100.'
+                )
+
         points = segment.get('trajectory_points')
         if not isinstance(points, list) or not points:
             return False, f'Segmento {label} sin trajectory_points.'

@@ -15,6 +15,7 @@ DEF  SPS ( )
   DECL BOOL xd_tempEnableMove
   DECL CHAR xd_tempMode[64]
   DECL INT xd_tempGripper
+  DECL REAL xd_tempTrajPtpVelPct
   DECL INT xd_tempI
   DECL INT xd_packetCounter
   DECL INT xd_sentMoveSeq
@@ -77,6 +78,7 @@ DEF  SPS ( )
   XD_CMD_UPDATING = FALSE
   XD_CMD_SEQ = 0
   XD_GRIPPER_COMMAND = -1
+  XD_TRAJ_PTP_VEL_PCT = 0.0
   XD_ENABLE_MOVE = FALSE
   XD_AXIS_MODE = FALSE
   XD_CART_MODE = FALSE
@@ -93,6 +95,7 @@ DEF  SPS ( )
   xd_tempSeq = 0
   xd_tempEnableMove = FALSE
   xd_tempGripper = -1
+  xd_tempTrajPtpVelPct = 0.0
 
   xd_tempA1 = 0.0
   xd_tempA2 = 0.0
@@ -179,6 +182,7 @@ DEF  SPS ( )
             XD_CMD_UPDATING = FALSE
             XD_CMD_SEQ = 0
             XD_GRIPPER_COMMAND = -1
+            XD_TRAJ_PTP_VEL_PCT = 0.0
             XD_ENABLE_MOVE = FALSE
             XD_RX_COUNTER = 0
             XD_SEND_COUNTER = 0
@@ -383,6 +387,17 @@ DEF  SPS ( )
             ENDIF
           ENDIF
         ENDIF
+        IF xd_channelOK AND xd_packetOK THEN
+          XD_RET = EKI_GetReal("XmlDualMove", "Command/TrajectoryPtpVelocityPct", xd_tempTrajPtpVelPct)
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+            xd_packetOK = FALSE
+          ELSE
+            IF (XD_RET.Read <> 1) OR (XD_RET.Counter <> xd_packetCounter) THEN
+              xd_packetOK = FALSE
+            ENDIF
+          ENDIF
+        ENDIF
 
         ; ---- Publish the mailbox ----
         IF xd_channelOK AND xd_packetOK THEN
@@ -407,6 +422,17 @@ DEF  SPS ( )
             XD_GRIPPER_COMMAND = xd_tempGripper
           ELSE
             XD_GRIPPER_COMMAND = -1
+          ENDIF
+          ; 0.0 preserves manual/legacy commands. Invalid explicit values use
+          ; -1.0 so the robot interpreter blocks motion instead of guessing.
+          IF xd_tempTrajPtpVelPct == 0.0 THEN
+            XD_TRAJ_PTP_VEL_PCT = 0.0
+          ELSE
+            IF (xd_tempTrajPtpVelPct > 0.0) AND (xd_tempTrajPtpVelPct <= 100.0) THEN
+              XD_TRAJ_PTP_VEL_PCT = xd_tempTrajPtpVelPct
+            ELSE
+              XD_TRAJ_PTP_VEL_PCT = -1.0
+            ENDIF
           ENDIF
           ; Published LAST: XD_CMD_SEQ is the packet-complete marker the robot
           ; interpreter watches.
@@ -510,6 +536,12 @@ DEF  SPS ( )
         ENDIF
         IF xd_channelOK THEN
           XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/GripperCommand")
+          IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
+            xd_channelOK = FALSE
+          ENDIF
+        ENDIF
+        IF xd_channelOK THEN
+          XD_RET = EKI_ClearBuffer("XmlDualMove", "Command/TrajectoryPtpVelocityPct")
           IF (XD_RET.Msg_No <> 0) OR (XD_RET.Connected == FALSE) THEN
             xd_channelOK = FALSE
           ENDIF

@@ -73,6 +73,10 @@ DEFAULT_GRIPPER_SETTLE_SEC = 2.0
 # consecutivos. Es independiente del max_delta_deg usado por SEND manual.
 DEFAULT_MAX_DELTA_DEG = 10.0
 
+# Archivos anteriores a execution_profile se ejecutan como trayectoria
+# normal. Este valor no se aplica a SEND manual.
+DEFAULT_KUKA_PTP_VELOCITY_PCT = 30.0
+
 # Tiempo mínimo entre dos puntos consecutivos. Suelo de seguridad frente a
 # trayectorias muy densas: la memoria de recepción de EthernetKRL cierra la
 # conexión a los 16 elementos sin leer y el guard del bridge corta en 10, así
@@ -139,6 +143,14 @@ class TrajectoryExecutor(QObject):
 
         self._max_delta = float(config.get(
             'trajectory_max_delta_deg', DEFAULT_MAX_DELTA_DEG))
+        self._default_ptp_velocity_pct = float(config.get(
+            'trajectory_kuka_ptp_velocity_normal_pct',
+            DEFAULT_KUKA_PTP_VELOCITY_PCT,
+        ))
+        if not 0.0 < self._default_ptp_velocity_pct <= 100.0:
+            raise ValueError(
+                'trajectory_kuka_ptp_velocity_normal_pct debe estar en '
+                '(0, 100].')
 
         # ── Estado de ejecución ──────────────────────────────────────
         self._state = STATE_IDLE
@@ -150,6 +162,7 @@ class TrajectoryExecutor(QObject):
         self._segment_index = 0
         self._point_index = 0
         self._current_target: Dict[str, float] = {}
+        self._current_ptp_velocity_pct = self._default_ptp_velocity_pct
         self._point_started_at = 0.0
         self._last_send_at = 0.0
         self._gripper_queue: List[str] = []
@@ -275,6 +288,10 @@ class TrajectoryExecutor(QObject):
 
         for seg_index, segment in enumerate(segments):
             label = segment.get('id') or f'T{seg_index + 1}'
+            velocity_pct, velocity_error = self._segment_velocity_pct(segment)
+            if velocity_error:
+                return False, f'{label}: {velocity_error}'
+
             for pt_index, point in enumerate(
                     segment.get('trajectory_points', [])):
                 positions = point.get('positions_deg')
@@ -447,6 +464,13 @@ class TrajectoryExecutor(QObject):
         segment = self._segments[self._segment_index]
         points = segment.get('trajectory_points', [])
 
+        velocity_pct, velocity_error = self._segment_velocity_pct(segment)
+        if velocity_error:
+            label = segment.get('id') or f'T{self._segment_index + 1}'
+            self._fail(f'{label}: {velocity_error}')
+            return
+        self._current_ptp_velocity_pct = velocity_pct
+
         if self._point_index >= len(points):
             self._on_segment_finished()
             return
@@ -470,7 +494,8 @@ class TrajectoryExecutor(QObject):
             )
             self.log_line.emit(
                 f'{label}: {self._segment_index + 1}/{len(self._segments)} — '
-                f'{len(points)} puntos intermedios.'
+                f'{len(points)} puntos intermedios — '
+                f'PTP {self._current_ptp_velocity_pct:g} %.'
             )
 
         self._state = STATE_MOVING
@@ -488,7 +513,12 @@ class TrajectoryExecutor(QObject):
         for axis, value in self._current_target.items():
             self._model.set_target(axis, value)
         self._model.set_target_mode('AxisTarget')
-        self._joint_send_fn()
+        self._model.request_trajectory_ptp_velocity_pct(
+            self._current_ptp_velocity_pct)
+        try:
+            self._joint_send_fn()
+        finally:
+            self._model.clear_trajectory_ptp_velocity_pct()
         self._last_send_at = time.monotonic()
         self._rx_counter_at_send = self._last_rx_counter
         self._feedback_frames_at_send = self._feedback_frames
@@ -668,3 +698,26 @@ class TrajectoryExecutor(QObject):
         except (IndexError, AttributeError):
             value = None
         return value or fallback
+
+    def _segment_velocity_pct(
+        self,
+        segment: dict,
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """Leer execution_profile con compatibilidad para archivos antiguos."""
+        profile = segment.get('execution_profile')
+        if profile is None:
+            return self._default_ptp_velocity_pct, None
+        if not isinstance(profile, dict):
+            return None, 'execution_profile inválido.'
+
+        value = profile.get('kuka_ptp_velocity_pct')
+        if not is_finite_number(value):
+            return None, 'kuka_ptp_velocity_pct no es un número finito.'
+
+        velocity_pct = float(value)
+        if not 0.0 < velocity_pct <= 100.0:
+            return None, (
+                'kuka_ptp_velocity_pct debe ser mayor que 0 y menor o igual '
+                'que 100.'
+            )
+        return velocity_pct, None

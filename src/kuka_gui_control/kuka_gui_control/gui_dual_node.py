@@ -97,6 +97,8 @@ DEFAULT_CONFIG = {
     'trajectory_min_point_period_sec':      0.2,
     'trajectory_gripper_settle_sec':        2.0,
     'trajectory_max_delta_deg':             10.0,
+    'trajectory_kuka_ptp_velocity_normal_pct':  30.0,
+    'trajectory_kuka_ptp_velocity_reduced_pct': 5.0,
 }
 
 
@@ -139,6 +141,10 @@ _SCALAR_PARAMS = {
     'trajectory_min_point_period_sec':   'trajectory_min_point_period_sec',
     'trajectory_gripper_settle_sec':     'trajectory_gripper_settle_sec',
     'trajectory_max_delta_deg':          'trajectory_max_delta_deg',
+    'trajectory_kuka_ptp_velocity_normal_pct':
+        'trajectory_kuka_ptp_velocity_normal_pct',
+    'trajectory_kuka_ptp_velocity_reduced_pct':
+        'trajectory_kuka_ptp_velocity_reduced_pct',
 }
 
 

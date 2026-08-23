@@ -53,6 +53,8 @@ DEF XmlDualMove( )
   BOOL readyToMove
   BOOL moveExecuted
   BOOL deltaOK
+  BOOL velocityOK
+  BOOL hasTrajectoryVelocity
 
   REAL targetA1
   REAL targetA2
@@ -67,6 +69,7 @@ DEF XmlDualMove( )
   REAL targetA
   REAL targetB
   REAL targetC
+  REAL ptpVelocityPct
 
   REAL errorA1
   REAL errorA2
@@ -110,6 +113,8 @@ DEF XmlDualMove( )
   readyToMove = FALSE
   moveExecuted = FALSE
   deltaOK = FALSE
+  velocityOK = FALSE
+  hasTrajectoryVelocity = FALSE
   isAxisMode = FALSE
   isCartesianMode = FALSE
 
@@ -126,6 +131,7 @@ DEF XmlDualMove( )
   targetA = $POS_ACT.A
   targetB = $POS_ACT.B
   targetC = $POS_ACT.C
+  ptpVelocityPct = 0.0
 
   errorA1 = 0.0
   errorA2 = 0.0
@@ -162,7 +168,6 @@ DEF XmlDualMove( )
 
 ;FOLD Configure motion parameters
   $BWDSTART = FALSE
-  $OV_PRO = 5
 
   ; Default TOOL and BASE (modify if your setup requires specific ones)
   $TOOL = $NULLFRAME
@@ -197,6 +202,7 @@ LOOP
 
       enableMove = XD_ENABLE_MOVE
       gripperCmd = XD_GRIPPER_COMMAND
+      ptpVelocityPct = XD_TRAJ_PTP_VEL_PCT
       isAxisMode = XD_AXIS_MODE
       isCartesianMode = XD_CART_MODE
 
@@ -336,6 +342,25 @@ LOOP
 
   XD_DELTA_OK = deltaOK
 
+  ;FOLD Validate trajectory PTP velocity
+    ; 0.0 identifies SEND manual/legacy and leaves the current programmed PTP
+    ; velocity untouched. Positive values belong only to AxisTarget trajectory
+    ; commands. Invalid mailbox values block motion.
+    velocityOK = FALSE
+    hasTrajectoryVelocity = FALSE
+
+    IF ptpVelocityPct == 0.0 THEN
+      velocityOK = TRUE
+    ENDIF
+    IF (ptpVelocityPct > 0.0) AND (ptpVelocityPct <= 100.0) THEN
+      velocityOK = TRUE
+      hasTrajectoryVelocity = TRUE
+    ENDIF
+    IF isCartesianMode AND hasTrajectoryVelocity THEN
+      velocityOK = FALSE
+    ENDIF
+  ;ENDFOLD (Validate trajectory PTP velocity)
+
   ;FOLD Build target from mailbox
     IF isAxisMode THEN
       axisTarget = $AXIS_ACT
@@ -364,8 +389,10 @@ LOOP
     IF enableMove == TRUE THEN
       IF limitsOK == TRUE THEN
         IF deltaOK == TRUE THEN
-          IF snapshotOK == TRUE THEN
-            readyToMove = TRUE
+          IF velocityOK == TRUE THEN
+            IF snapshotOK == TRUE THEN
+              readyToMove = TRUE
+            ENDIF
           ENDIF
         ENDIF
       ENDIF
@@ -405,6 +432,9 @@ LOOP
             ;FOLD Motion
               IF readyToMove == TRUE THEN
                 IF isAxisMode THEN
+                  IF hasTrajectoryVelocity THEN
+                    BAS (#VEL_PTP,ptpVelocityPct)
+                  ENDIF
                   PTP axisTarget
                 ENDIF
 

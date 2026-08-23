@@ -79,6 +79,7 @@ Usage:
 """
 
 import json
+import math
 import time
 import threading
 from typing import Optional
@@ -243,6 +244,9 @@ class EkiAxisMoveNode(Node):
         # -1 = no gripper action. Never anything else unless a target JSON
         # explicitly asks for 0 or 1 and both safety gates are open.
         self._last_gripper_command: int = -1
+        # 0.0 = comando no procedente de ENVIAR TRAYECTORIA. Los comandos
+        # manuales no imponen ninguna velocidad PTP al controlador.
+        self._last_trajectory_ptp_velocity_pct: float = 0.0
 
         # Command pacing state. Touched only from the TCP server thread,
         # same as _last_sent_seq, so it needs no extra lock.
@@ -360,6 +364,31 @@ class EkiAxisMoveNode(Node):
         cmd_seq = int(data.get('seq', 0))
         mode = str(data.get('mode', 'AxisTarget'))
 
+        # Campo exclusivo de ENVIAR TRAYECTORIA. Su ausencia conserva el
+        # contrato anterior para SEND manual. Si está presente debe ser un
+        # porcentaje PTP articular finito dentro de (0, 100].
+        trajectory_velocity_pct = 0.0
+        if 'trajectory_ptp_velocity_pct' in data:
+            raw_velocity = data.get('trajectory_ptp_velocity_pct')
+            try:
+                trajectory_velocity_pct = float(raw_velocity)
+            except (TypeError, ValueError):
+                self.get_logger().warn(
+                    'Target JSON trajectory_ptp_velocity_pct no es numérico '
+                    '— target REJECTED.')
+                return
+            if (not math.isfinite(trajectory_velocity_pct)
+                    or not 0.0 < trajectory_velocity_pct <= 100.0):
+                self.get_logger().warn(
+                    'Target JSON trajectory_ptp_velocity_pct fuera de '
+                    '(0, 100] — target REJECTED.')
+                return
+            if mode != 'AxisTarget':
+                self.get_logger().warn(
+                    'trajectory_ptp_velocity_pct solo es válido para '
+                    'AxisTarget — target REJECTED.')
+                return
+
         # Optional gripper request. Absent, malformed or out-of-range always
         # degrades to -1 ("do nothing") — a bad payload must never be able to
         # open or close the gripper.
@@ -440,12 +469,14 @@ class EkiAxisMoveNode(Node):
             self._last_mode = mode
             self._last_enable_move = enable_move
             self._last_gripper_command = gripper
+            self._last_trajectory_ptp_velocity_pct = trajectory_velocity_pct
             self._last_cmd_seq = cmd_seq
             self._last_cmd_time = time.monotonic()
 
         self.get_logger().info(
             f'[TARGET RECEIVED] seq={cmd_seq} mode={mode} '
-            f'enable={enable_move} gripper={gripper}'
+            f'enable={enable_move} gripper={gripper} '
+            f'trajectory_ptp_velocity_pct={trajectory_velocity_pct:g}'
         )
 
     # ── Feedback callback (called from TCP thread) ───────────────────
@@ -624,6 +655,8 @@ class EkiAxisMoveNode(Node):
             mode_snap = self._last_mode
             enable_move_snap = self._last_enable_move
             gripper_snap = self._last_gripper_command
+            trajectory_velocity_snap = \
+                self._last_trajectory_ptp_velocity_pct
             cmd_seq = self._last_cmd_seq
             cmd_time = self._last_cmd_time
 
@@ -636,7 +669,7 @@ class EkiAxisMoveNode(Node):
         # down to decide whether this <Robot> frame earns a <Command> reply.
         signature = self._command_signature(
             cmd_seq, mode_snap, enable_move_snap, target_snap, cart_snap,
-            gripper_snap)
+            gripper_snap, trajectory_velocity_snap)
 
         # ── Validation layers ────────────────────────────────────────
         effective_enable = enable_move_snap
@@ -805,6 +838,7 @@ class EkiAxisMoveNode(Node):
             cartesian_target=cart_snap,
             mode=mode_snap,
             gripper_command=effective_gripper,
+            trajectory_ptp_velocity_pct=trajectory_velocity_snap,
         )
 
         # Publish the sent command XML
@@ -821,6 +855,7 @@ class EkiAxisMoveNode(Node):
             f'[COMMAND SEND] reason={send_reason} seq={cmd_seq} '
             f'enable={1 if effective_enable else 0} '
             f'gripper={effective_gripper} '
+            f'trajectory_ptp_velocity_pct={trajectory_velocity_snap:g} '
             f'pending={self._pending_commands}'
         )
         self._publish_diagnostics_msg(
@@ -841,6 +876,7 @@ class EkiAxisMoveNode(Node):
         target: dict,
         cartesian: dict,
         gripper_command: int,
+        trajectory_ptp_velocity_pct: float,
     ) -> tuple:
         """
         Build a comparable signature of the command the GUI is requesting.
@@ -864,6 +900,7 @@ class EkiAxisMoveNode(Node):
             str(mode),
             bool(enable_move),
             int(gripper_command),
+            round(float(trajectory_ptp_velocity_pct), 4),
             tuple(round(float(target.get(a, 0.0)), 4) for a in _AXES),
             tuple(round(float(cartesian.get(a, 0.0)), 4)
                   for a in _CARTESIAN_AXES),

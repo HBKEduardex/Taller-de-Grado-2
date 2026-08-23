@@ -262,7 +262,8 @@ Para poder operar el KUKA en modo Cartesiano, se requiere el archivo `XmlDualMov
 Capa **añadida** sobre el sistema existente. Permite crear, recibir,
 almacenar, previsualizar y ejecutar secuencias de trayectorias sin cambiar
 nada de lo que ya funcionaba: Axis Move, cartesiano, jog, HOME, límites,
-DDS, TCP/IP, EKI, Submit, SPS, KRL, RViz y MoveIt siguen intactos.
+DDS, RViz y MoveIt siguen intactos. El canal TCP/IP/EKI existente se amplía
+con un único porcentaje PTP exclusivo de la ejecución de trayectorias.
 
 Disponible en **ambas GUIs** (original y dual), mediante un widget
 compartido, así que la lógica no está duplicada.
@@ -294,7 +295,7 @@ trajectories/*.json          trajectories/*.json
 ### 16.2 Controles
 
 ```text
-SET   Puntos: N   SET ABRIR GARRA   SET CERRAR GARRA   LIMPIAR
+SET   SET VEL. 5%   Puntos: N   SET ABRIR GARRA   SET CERRAR GARRA   LIMPIAR
 ENVIAR PUNTOS (N)   PROBAR TRAYECTORIA   ENVIAR TRAYECTORIA   DETENER
 (•) Manual   ( ) Automático
 estado + log temporal
@@ -302,7 +303,9 @@ estado + log temporal
 
 - **SET** captura `AxisActual` A1–A6 **real** del KUKA (no los campos de la
   GUI, no el target, no RViz, no XYZABC). Solo en memoria: **no escribe en
-  disco**.
+  disco**. Marca el tramo entrante como PTP 30 %.
+- **SET VEL. 5%** reutiliza la misma captura de `AxisActual`, sin consultar
+  Cartesianas, y marca el tramo entrante como PTP 5 %.
 - **SET ABRIR/CERRAR GARRA** *programa* un evento anclado al último punto.
   **No mueve la garra.** Estado inicial siempre `open`.
 - **ENVIAR PUNTOS** publica UNA solicitud con todos los puntos. Exige ≥ 2.
@@ -337,17 +340,30 @@ existía** (el del `RosAxisMoveBridge`, dentro de su executor). No se crea
 ningún nodo nuevo ni uno por ventana, así que no reaparecen los nodos
 homónimos ni el `Publisher count: 2`.
 
-### 16.5 ⚠️ Limitación real del protocolo KRL/EKI
+### 16.5 Velocidad PTP de ejecución y limitación punto a punto
 
 > [!IMPORTANT]
 > `XmlDualMove.src` ejecuta **un `PTP` de parada exacta por cada `Seq`
-> nuevo**, con `WAIT SEC 0.1` por vuelta de bucle y `$OV_PRO = 5`. Además,
+> nuevo**, con `WAIT SEC 0.1` por vuelta de bucle. Además,
 > la memoria de recepción de EthernetKRL **cierra la conexión** a los 16
 > elementos sin leer, y `Robot/LastMoveSeq` **no está** en el bloque `SEND`
 > de `XmlDualMove.xml` (solo `Robot/MoveExecuted`, que es un pulso booleano
 > sin número de secuencia asociado).
 >
-> Consecuencias, sin haber tocado nada del lado KUKA:
+> Condiciones del estudio:
+>
+> - SmartPad Program Override: 50 %.
+> - SmartPad Jog Override: 10 % (no participa en ejecución automática).
+> - Segmento NORMAL: KUKA PTP programado 30 %.
+> - Segmento REDUCED: KUKA PTP programado 5 %.
+>
+> `XmlDualMove.src` ya no fuerza `$OV_PRO`; respeta el valor del SmartPad.
+> El 5 % es una aproximación empírica basada en `test10_vel50.csv`: bajo
+> Program Override 50 %, los SLIN 0.03 m/s observados tuvieron alrededor del
+> 17.5 % de la magnitud de velocidad articular de los SPTP 30 %. Esto no
+> significa que 5 % sea igual a 0.03 m/s.
+>
+> Consecuencias del protocolo punto a punto:
 >
 > - Una trayectoria densa se ejecuta como **N movimientos punto a punto con
 >   parada completa**, no como un movimiento continuo mezclado.
@@ -358,9 +374,9 @@ homónimos ni el `Publisher count: 2`.
 > - La llegada a cada punto se confirma con `AxisActual` + el acuse de
 >   recibo `Robot/RxCounter`, no con `MoveExecuted` por `Seq`.
 >
-> **No se ha modificado KRL, EKI, SPS ni el Submit Interpreter.** Levantar
-> esta limitación exigiría cambios del lado del controlador que quedan
-> deliberadamente fuera de alcance.
+> La parada exacta, pacing, `WAIT SEC 0.1`, `RxCounter`, tolerancia y reenvíos
+> no se modifican. No se añade SLIN, blending, streaming ni dependencia
+> cartesiana a la trayectoria.
 
 ### 16.6 Documentación detallada
 

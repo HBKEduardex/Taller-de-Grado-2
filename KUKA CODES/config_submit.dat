@@ -825,6 +825,12 @@ DECL BOOL XD_CART_MODE = FALSE
 ; {-1, 0, 1} is stored as -1.
 DECL INT XD_GRIPPER_COMMAND = -1
 
+; --- PTP velocity for ENVIAR TRAYECTORIA only ---
+; 0.0 = manual/legacy command: XmlDualMove does not alter PTP velocity.
+; (0.0, 100.0] = programmed PTP velocity for every point of the segment.
+; -1.0 = invalid value received: motion is blocked by XmlDualMove.
+DECL REAL XD_TRAJ_PTP_VEL_PCT = 0.0
+
 ; --- Validation states (written by XmlDualMove.src, read by SPS for telemetry) ---
 DECL BOOL XD_LIMITS_OK = FALSE
 DECL BOOL XD_DELTA_OK = FALSE

@@ -74,6 +74,8 @@ DEFAULT_CONFIG = {
     'trajectory_min_point_period_sec':      0.2,
     'trajectory_gripper_settle_sec':        2.0,
     'trajectory_max_delta_deg':             10.0,
+    'trajectory_kuka_ptp_velocity_normal_pct':  30.0,
+    'trajectory_kuka_ptp_velocity_reduced_pct': 5.0,
 
     'home_joints_deg':        dict(DEFAULT_HOME),
     'soft_limits_deg': {

@@ -12,6 +12,7 @@ This module does NOT modify any existing module.
 """
 
 import re
+import math
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
@@ -240,6 +241,7 @@ def build_axis_move_command_xml(
     cartesian_target: Optional[Dict[str, float]] = None,
     mode: str = 'AxisTarget',
     gripper_command: int = -1,
+    trajectory_ptp_velocity_pct: float = 0.0,
 ) -> str:
     """
     Build the <Command> XML string to send back to the KUKA.
@@ -254,6 +256,7 @@ def build_axis_move_command_xml(
           <CartesianTarget X="0.0" Y="0.0" Z="0.0"
                            A="0.0" B="0.0" C="0.0"/>
           <GripperCommand>-1</GripperCommand>
+          <TrajectoryPtpVelocityPct>0.0</TrajectoryPtpVelocityPct>
         </Command>
 
     Args:
@@ -268,6 +271,9 @@ def build_axis_move_command_xml(
                       coerced to -1, so a malformed value can never move the
                       gripper. Forced to -1 whenever motion is gated off,
                       because the gripper is a physical action too.
+        trajectory_ptp_velocity_pct: PTP articular programado para un comando
+                      de ENVIAR TRAYECTORIA, dentro de (0, 100]. 0.0 indica
+                      un comando anterior/manual y no modifica su velocidad.
 
     Returns:
         XML string ready to be sent over TCP.
@@ -286,6 +292,15 @@ def build_axis_move_command_xml(
         effective_gripper = int(gripper_command)
     else:
         effective_gripper = -1
+
+    try:
+        effective_trajectory_velocity = float(
+            trajectory_ptp_velocity_pct)
+    except (TypeError, ValueError):
+        effective_trajectory_velocity = 0.0
+    if (not math.isfinite(effective_trajectory_velocity)
+            or not 0.0 < effective_trajectory_velocity <= 100.0):
+        effective_trajectory_velocity = 0.0
 
     a1 = target.get('A1', 0.0)
     a2 = target.get('A2', -90.0)
@@ -326,6 +341,9 @@ def build_axis_move_command_xml(
         f' C="{cc:.4f}"'
         f'/>'
         f'<GripperCommand>{effective_gripper}</GripperCommand>'
+        f'<TrajectoryPtpVelocityPct>'
+        f'{effective_trajectory_velocity:.4f}'
+        f'</TrajectoryPtpVelocityPct>'
         f'</Command>'
     )
     return xml

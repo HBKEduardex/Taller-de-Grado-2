@@ -121,6 +121,10 @@ class JointCommandModel:
         # exactamente UN comando con 0/1 y todo lo demás sigue llevando -1.
         self._pending_gripper_command: int = -1
 
+        # Metadata de un solo uso para ENVIAR TRAYECTORIA. None mantiene el
+        # contrato previo de SEND manual sin imponer ninguna velocidad PTP.
+        self._pending_trajectory_ptp_velocity_pct: Optional[float] = None
+
         # Mode for node: 'manual_send' or 'auto'
         self._node_mode: str = 'manual_send'
         
@@ -310,6 +314,20 @@ class JointCommandModel:
         """Valor que llevará el próximo comando (-1 = ninguna acción)."""
         return self._pending_gripper_command
 
+    # ── Velocidad PTP exclusiva de ENVIAR TRAYECTORIA ───────────────
+
+    def request_trajectory_ptp_velocity_pct(self, value: float) -> None:
+        """Añadir la velocidad PTP al próximo JSON de trayectoria solamente."""
+        candidate = float(value)
+        if not 0.0 < candidate <= 100.0:
+            raise ValueError(
+                'trajectory_ptp_velocity_pct debe estar en (0, 100].')
+        self._pending_trajectory_ptp_velocity_pct = candidate
+
+    def clear_trajectory_ptp_velocity_pct(self) -> None:
+        """Evitar que metadata de trayectoria alcance un SEND posterior."""
+        self._pending_trajectory_ptp_velocity_pct = None
+
     # ── Sequence ─────────────────────────────────────────────────────
 
     def next_seq(self) -> int:
@@ -334,6 +352,8 @@ class JointCommandModel:
         # vuelve inmediatamente a -1, sin temporizadores ni hilos.
         gripper_command = self._pending_gripper_command
         self._pending_gripper_command = -1
+        trajectory_velocity_pct = self._pending_trajectory_ptp_velocity_pct
+        self._pending_trajectory_ptp_velocity_pct = None
         payload = {
             'seq': seq,
             'source': 'kuka_gui_control',
@@ -344,6 +364,9 @@ class JointCommandModel:
             'axis_target': {},
             'cartesian_target': {}
         }
+        if trajectory_velocity_pct is not None:
+            payload['trajectory_ptp_velocity_pct'] = round(
+                trajectory_velocity_pct, 6)
         for a in AXES:
             payload['axis_target'][a] = round(self._target.get(a, 0.0), 6)
             payload[a] = payload['axis_target'][a] # Legacy flat support

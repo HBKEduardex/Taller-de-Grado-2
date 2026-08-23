@@ -43,9 +43,12 @@ except ImportError as e:
 from kuka_gui_control.trajectory_executor import TrajectoryExecutor
 from kuka_gui_control.trajectory_ros_bridge import TrajectoryRosBridge
 from kuka_gui_control.trajectory_sequence_model import (
+    DEFAULT_KUKA_PTP_VELOCITY_NORMAL_PCT,
+    DEFAULT_KUKA_PTP_VELOCITY_REDUCED_PCT,
     SCHEMA_VERSION,
     TrajectorySequenceModel,
     build_storage_document,
+    is_finite_number,
     validate_result_payload,
 )
 from kuka_gui_control import trajectory_storage
@@ -157,6 +160,14 @@ class TrajectorySequencePanel(QGroupBox):
         self._generation_timeout = float(self._config.get(
             'trajectory_generation_timeout_sec',
             DEFAULT_GENERATION_TIMEOUT_SEC))
+        self._ptp_velocity_normal_pct = self._configured_ptp_velocity(
+            'trajectory_kuka_ptp_velocity_normal_pct',
+            DEFAULT_KUKA_PTP_VELOCITY_NORMAL_PCT,
+        )
+        self._ptp_velocity_reduced_pct = self._configured_ptp_velocity(
+            'trajectory_kuka_ptp_velocity_reduced_pct',
+            DEFAULT_KUKA_PTP_VELOCITY_REDUCED_PCT,
+        )
 
         # Último feedback REAL recibido por TCP/IP.
         self._last_axis_actual: Optional[Dict[str, float]] = None
@@ -211,6 +222,18 @@ class TrajectorySequencePanel(QGroupBox):
         )
         self._btn_set.clicked.connect(self._on_set_point)
         row_capture.addWidget(self._btn_set)
+
+        reduced_label = f'{self._ptp_velocity_reduced_pct:g}'
+        self._btn_set_reduced = QPushButton(f'SET VEL. {reduced_label}%')
+        self._btn_set_reduced.setStyleSheet(_BTN_PRIMARY)
+        self._btn_set_reduced.setCursor(Qt.PointingHandCursor)
+        self._btn_set_reduced.setToolTip(
+            'Captura el mismo AxisActual A1..A6 que SET y marca la velocidad '
+            f'PTP del segmento entrante como {reduced_label} %.\n'
+            'No consulta coordenadas cartesianas ni guarda en disco.'
+        )
+        self._btn_set_reduced.clicked.connect(self._on_set_reduced_point)
+        row_capture.addWidget(self._btn_set_reduced)
 
         self._lbl_points = QLabel('Puntos: 0')
         self._lbl_points.setStyleSheet(
@@ -434,6 +457,21 @@ class TrajectorySequencePanel(QGroupBox):
 
     def _on_set_point(self) -> None:
         """Capturar P_n desde AxisActual. Nunca desde la GUI ni desde RViz."""
+        self._capture_point(
+            self._ptp_velocity_normal_pct,
+            self._last_position_actual,
+        )
+
+    def _on_set_reduced_point(self) -> None:
+        """Capturar P_n con el perfil PTP reducido del segmento entrante."""
+        self._capture_point(self._ptp_velocity_reduced_pct, None)
+
+    def _capture_point(
+        self,
+        incoming_velocity_pct: float,
+        cartesian_diagnostic: Optional[Dict[str, float]],
+    ) -> None:
+        """Implementación única compartida por los dos botones SET."""
         if not self._feedback_is_fresh():
             self._warn(
                 'Sin feedback válido del KUKA',
@@ -446,7 +484,10 @@ class TrajectorySequencePanel(QGroupBox):
             return
 
         ok, message = self._sequence.add_point_from_axis_actual(
-            self._last_axis_actual, self._last_position_actual)
+            self._last_axis_actual,
+            cartesian_diagnostic,
+            incoming_kuka_ptp_velocity_pct=incoming_velocity_pct,
+        )
 
         if not ok:
             self._warn('No se pudo capturar el punto', message)
@@ -876,6 +917,7 @@ class TrajectorySequencePanel(QGroupBox):
         busy = running or waiting
 
         self._btn_set.setEnabled(not busy)
+        self._btn_set_reduced.setEnabled(not busy)
         self._btn_set_open.setEnabled(not busy and count > 0)
         self._btn_set_close.setEnabled(not busy and count > 0)
         self._btn_clear.setEnabled(not busy)
@@ -898,6 +940,14 @@ class TrajectorySequencePanel(QGroupBox):
 
     def _warn(self, title: str, text: str) -> None:
         QMessageBox.warning(self, title, text)
+
+    def _configured_ptp_velocity(self, key: str, default: float) -> float:
+        value = self._config.get(key, default)
+        if not is_finite_number(value) or not 0.0 < float(value) <= 100.0:
+            raise ValueError(
+                f'{key} debe ser mayor que 0 y menor o igual que 100.'
+            )
+        return float(value)
 
     # ===================================================================
     # Cierre

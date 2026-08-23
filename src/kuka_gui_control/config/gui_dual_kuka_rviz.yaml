@@ -79,6 +79,11 @@ kuka_gui_dual_node:
     trajectory_generation_timeout_sec: 60.0
 
     # ── Ejecución física de un archivo (ENVIAR TRAYECTORIA) ───────────
+    # Velocidad programada del PTP articular en el KUKA. No modifica la
+    # parametrización ni los puntos generados por MoveIt2.
+    trajectory_kuka_ptp_velocity_normal_pct: 30.0
+    trajectory_kuka_ptp_velocity_reduced_pct: 5.0
+
     # Salto máximo admitido entre puntos consecutivos (y desde la posición
     # real al primer punto). Es independiente del límite de SEND manual.
     trajectory_max_delta_deg: 10.0
