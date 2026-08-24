@@ -69,6 +69,34 @@ except Exception:
     SCIPY_AVAILABLE = False
     SCIPY_VERSION = None
 
+# python-docx es OPCIONAL: solo lo necesita la funcion "Generar informe de varios
+# CSV".  Si no esta instalado, el resto del programa funciona exactamente igual y
+# ese boton avisa de que hace falta 'pip install python-docx'.
+try:
+    import docx as _docx
+    from docx import Document as _DocxDocument
+    from docx.shared import Pt as _DocxPt, Inches as _DocxInches, RGBColor as _DocxRGB
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _DocxAlign
+    from docx.enum.section import WD_ORIENT as _DocxOrient
+    DOCX_AVAILABLE = True
+    DOCX_VERSION = getattr(_docx, "__version__", "desconocida")
+except Exception:
+    _docx = None
+    _DocxDocument = None
+    DOCX_AVAILABLE = False
+    DOCX_VERSION = None
+
+# Canvas Agg explicito: las figuras del informe se rasterizan desde un hilo
+# secundario, y con el backend TkAgg activo savefig() crearia objetos Tk fuera
+# del hilo principal.  FigureCanvasAgg evita por completo ese riesgo.
+from matplotlib.backends.backend_agg import FigureCanvasAgg as _AggCanvas
+
+from io import BytesIO
+import queue as _queue
+import shutil
+import tempfile
+import threading
+
 
 # =============================================================================
 # CONFIGURACION DEL ANALISIS
@@ -177,6 +205,25 @@ ROS2_UNAVAILABLE_MESSAGE = (
 )
 
 # Metricas de la matriz de estudio que NO pueden obtenerse de la telemetria CSV.
+# --- Informe grupal en Word (funcion aditiva: no afecta al analisis) ---------
+# Subcarpeta exclusiva de los informes de varios CSV.  Los resultados
+# individuales que ya existan en resultados/ no se tocan nunca.
+GROUP_REPORTS_DIRNAME = "informes_grupales"
+GROUP_REPORT_PREFIX = "informe_comparativo_grupo"
+# Resolucion de las figuras incrustadas en el .docx.  Se mantiene separada de
+# PLOT_DPI (300, guardado individual): a 200 dpi una figura de 13 in colocada a
+# ~10.3 in de ancho conserva ~250 dpi efectivos de impresion y evita documentos
+# de decenas de MB al procesar muchos CSV.  Subir a 300 si se prefiere.
+REPORT_FIGURE_DPI = 200
+# Documento en horizontal: las matrices 2x3 de A1-A6 y la tabla articular de 8
+# columnas solo resultan legibles con el ancho de pagina apaisado.
+REPORT_LANDSCAPE = True
+REPORT_MARGIN_IN = 0.7
+REPORT_PAGE_WIDTH_IN = 11.69          # A4 apaisado
+REPORT_PAGE_HEIGHT_IN = 8.27
+REPORT_BODY_FONT_PT = 10
+REPORT_TABLE_FONT_PT = 9
+
 EXTERNAL_METRICS = [
     "Error de rectitud",
     "Error angular",
@@ -1443,6 +1490,742 @@ def open_results_folder(folder):
 
 
 # =============================================================================
+# 12-bis. INFORME GRUPAL EN WORD  (funcion ADITIVA)
+#
+# Procesa varios CSV en una sola operacion y construye UN unico .docx.
+#
+# Reutiliza integramente el motor de analisis del flujo individual:
+#   analyze_file()  ->  build_all_figures()
+# No hay un segundo algoritmo: las metricas y las figuras del informe son
+# exactamente las mismas que muestra y guarda el analisis de un solo CSV.
+# =============================================================================
+
+# Metricas articulares que se agregan entre ensayos (clave, etiqueta, unidad, decimales)
+GROUP_AXIS_METRICS = [
+    ("vel_max_abs_rad_s", "Velocidad maxima absoluta", "rad/s", 5),
+    ("vel_rms_rad_s", "Velocidad RMS", "rad/s", 5),
+    ("acc_max_abs_rad_s2", "Aceleracion maxima absoluta", "rad/s2", 5),
+    ("acc_rms_rad_s2", "Aceleracion RMS", "rad/s2", 5),
+    ("jerk_max_abs_rad_s3", "Jerk maximo absoluto", "rad/s3", 5),
+    ("jerk_rms_rad_s3", "Jerk RMS", "rad/s3", 5),
+    ("delta_q_max_rad", "Delta q maximo", "rad", 6),
+]
+
+# Orden de las figuras dentro de la seccion de cada ensayo
+GROUP_FIGURE_ORDER = [
+    ("position", "Posicion articular", "Posicion articular"),
+    ("velocity", "Velocidad articular", "Velocidad articular"),
+    ("acceleration", "Aceleracion articular", "Aceleracion articular"),
+    ("jerk", "Jerk articular", "Jerk articular"),
+    ("continuity", "Continuidad articular", "Continuidad articular"),
+    ("sampling", "Muestreo", "Comportamiento del periodo de muestreo"),
+    ("cart_pos", "Posicion cartesiana", "Posicion cartesiana del TCP"),
+    ("cart_ori", "Orientacion cartesiana", "Orientacion cartesiana registrada"),
+]
+
+
+def docx_requirement_message():
+    """Mensaje unico para cuando falta python-docx."""
+    return ("Esta funcion necesita la libreria 'python-docx', que no esta "
+            "instalada.\n\nInstalela con:\n\n    pip install python-docx\n\n"
+            "El resto del programa funciona con normalidad sin ella.")
+
+
+def group_reports_dir():
+    """scripts comparativo/resultados/informes_grupales/ (se crea al vuelo)."""
+    return os.path.join(RESULTS_DIR, GROUP_REPORTS_DIRNAME)
+
+
+def group_report_path(when=None):
+    """informe_comparativo_grupo_YYYYMMDD_HHMMSS.docx (nunca sobrescribe)."""
+    when = when or datetime.datetime.now()
+    name = "%s_%s.docx" % (GROUP_REPORT_PREFIX, when.strftime("%Y%m%d_%H%M%S"))
+    return os.path.join(group_reports_dir(), name)
+
+
+def report_usable_width_in():
+    """Ancho util de la pagina del informe, en pulgadas."""
+    width = REPORT_PAGE_WIDTH_IN if REPORT_LANDSCAPE else REPORT_PAGE_HEIGHT_IN
+    return width - 2 * REPORT_MARGIN_IN
+
+
+# -----------------------------------------------------------------------------
+# Figuras -> PNG temporal
+# -----------------------------------------------------------------------------
+
+def _release_figure(fig):
+    """Libera una figura de Matplotlib (equivalente a plt.close para Figure)."""
+    if fig is None:
+        return
+    try:
+        fig.clear()
+    except Exception:
+        pass
+    try:
+        fig.canvas = None
+    except Exception:
+        pass
+
+
+def render_figure_to_png(fig, target_path):
+    """
+    Rasteriza una figura a PNG usando explicitamente el canvas Agg.
+
+    Se fuerza Agg porque esta funcion se ejecuta en un hilo secundario y el
+    backend activo de la aplicacion es TkAgg (no seguro fuera del hilo principal).
+    """
+    _AggCanvas(fig)
+    fig.savefig(target_path, format="png", dpi=REPORT_FIGURE_DPI,
+                bbox_inches="tight")
+    return target_path
+
+
+def render_figures_to_tempdir(figures, tmp_dir, test_index):
+    """
+    Guarda las figuras del ensayo en PNG temporales y devuelve {clave: ruta}.
+    Los PNG viven en una carpeta temporal que se borra al terminar el informe:
+    no se crean imagenes permanentes dentro de resultados/.
+    """
+    paths = {}
+    for key, _sub, _cap in GROUP_FIGURE_ORDER:
+        fig = figures.get(key)
+        if fig is None:
+            continue
+        target = os.path.join(tmp_dir, "e%02d_%s.png" % (test_index, key))
+        try:
+            render_figure_to_png(fig, target)
+            paths[key] = target
+        except Exception:
+            # una figura que falle no debe tumbar el informe completo
+            continue
+    return paths
+
+
+def add_matplotlib_figure_to_docx(document, image_path, width_in=None):
+    """Inserta un PNG centrado, ajustado al ancho util manteniendo proporcion."""
+    if width_in is None:
+        width_in = report_usable_width_in()
+    par = document.add_paragraph()
+    par.alignment = _DocxAlign.CENTER
+    run = par.add_run()
+    run.add_picture(image_path, width=_DocxInches(width_in))
+    return par
+
+
+def add_figure_caption(document, text):
+    """Pie de figura centrado y en cursiva."""
+    par = document.add_paragraph()
+    par.alignment = _DocxAlign.CENTER
+    run = par.add_run(text)
+    run.italic = True
+    run.font.size = _DocxPt(REPORT_TABLE_FONT_PT)
+    return par
+
+
+# -----------------------------------------------------------------------------
+# Utilidades de documento
+# -----------------------------------------------------------------------------
+
+def _new_report_document():
+    """Documento base: A4 apaisado, margenes ajustados y fuente legible."""
+    document = _DocxDocument()
+    section = document.sections[0]
+    if REPORT_LANDSCAPE:
+        section.orientation = _DocxOrient.LANDSCAPE
+        section.page_width = _DocxInches(REPORT_PAGE_WIDTH_IN)
+        section.page_height = _DocxInches(REPORT_PAGE_HEIGHT_IN)
+    else:
+        section.page_width = _DocxInches(REPORT_PAGE_HEIGHT_IN)
+        section.page_height = _DocxInches(REPORT_PAGE_WIDTH_IN)
+    for attr in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
+        setattr(section, attr, _DocxInches(REPORT_MARGIN_IN))
+    try:
+        document.styles["Normal"].font.size = _DocxPt(REPORT_BODY_FONT_PT)
+    except Exception:
+        pass
+    return document
+
+
+def _add_paragraph(document, text="", bold=False, size_pt=None, align=None):
+    par = document.add_paragraph()
+    if align is not None:
+        par.alignment = align
+    run = par.add_run(text)
+    run.bold = bold
+    if size_pt is not None:
+        run.font.size = _DocxPt(size_pt)
+    return par
+
+
+def _set_fixed_table_widths(table, widths_in):
+    """
+    Fija los anchos de columna de verdad.
+
+    Word y LibreOffice reajustan las columnas por su cuenta salvo que la tabla
+    declare 'layout fijo'; sin esto, los nombres largos de archivo parten en
+    varias lineas y la tabla queda ilegible.
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    try:
+        table.autofit = False
+    except Exception:
+        pass
+    try:
+        tbl_pr = table._tbl.tblPr
+        for existing in tbl_pr.findall(qn("w:tblLayout")):
+            tbl_pr.remove(existing)
+        layout = OxmlElement("w:tblLayout")
+        layout.set(qn("w:type"), "fixed")
+        tbl_pr.append(layout)
+    except Exception:
+        pass
+
+    for i, width in enumerate(widths_in):
+        if i >= len(table.columns):
+            break
+        try:
+            table.columns[i].width = _DocxInches(width)
+        except Exception:
+            pass
+    for row in table.rows:
+        for i, width in enumerate(widths_in):
+            if i < len(row.cells):
+                row.cells[i].width = _DocxInches(width)
+
+
+def _add_table(document, headers, rows, widths_in=None,
+               font_pt=REPORT_TABLE_FONT_PT):
+    """
+    Tabla con cabecera en negrita.  Los valores van como TEXTO real editable,
+    nunca como imagen.
+    """
+    table = document.add_table(rows=1, cols=len(headers))
+    try:
+        table.style = "Table Grid"
+    except Exception:
+        pass
+    header_cells = table.rows[0].cells
+    for i, text in enumerate(headers):
+        header_cells[i].text = ""
+        run = header_cells[i].paragraphs[0].add_run(str(text))
+        run.bold = True
+        run.font.size = _DocxPt(font_pt)
+    for row in rows:
+        cells = table.add_row().cells
+        for i, value in enumerate(row):
+            cells[i].text = ""
+            run = cells[i].paragraphs[0].add_run(str(value))
+            run.font.size = _DocxPt(font_pt)
+    if widths_in:
+        _set_fixed_table_widths(table, widths_in)
+    return table
+
+
+def _add_page_break(document):
+    document.add_page_break()
+
+
+def _mean_std_min_max(values):
+    """Estadisticos entre ensayos, ignorando valores no finitos."""
+    v = _finite(values)
+    if v.size == 0:
+        nan = float("nan")
+        return {"n": 0, "mean": nan, "std": nan, "min": nan, "max": nan}
+    return {"n": int(v.size), "mean": float(np.mean(v)),
+            "std": float(np.std(v, ddof=0)), "min": float(np.min(v)),
+            "max": float(np.max(v))}
+
+
+# -----------------------------------------------------------------------------
+# Resumen compacto de un ensayo (lo unico que se conserva en memoria)
+# -----------------------------------------------------------------------------
+
+def summarize_result_for_group(res, index, path):
+    """
+    Extrae de un AnalysisResult solo lo necesario para el informe.
+
+    Permite liberar el AnalysisResult y sus figuras inmediatamente despues de
+    cada CSV, de forma que procesar 20 archivos no acumule memoria.
+    """
+    s = res.sampling
+    m = res.motion
+    fi = res.filter_info
+
+    axis = {}
+    for name in AXIS_NAMES:
+        merged = dict(res.joint_metrics[name])
+        merged.update(res.continuity_metrics[name])
+        axis[name] = merged
+
+    return {
+        "index": index,
+        "path": os.path.abspath(path),
+        "name": os.path.basename(path),
+        "ok": True,
+        "error": None,
+        "n_samples": s["n_samples"],
+        "rows_original": res.clean_report["rows_original"],
+        "duration_s": s["duration_s"],
+        "freq_hz": s["freq_hz"],
+        "dt_mean_ms": s["dt_mean_ms"],
+        "dt_median_ms": s["dt_median_ms"],
+        "dt_std_ms": s["dt_std_ms"],
+        "dt_min_ms": s["dt_min_ms"],
+        "dt_max_ms": s["dt_max_ms"],
+        "motion_detected": bool(m["detected"]),
+        "motion_reason": m["reason"],
+        "t_start": m["t_start"] if m["detected"] else float("nan"),
+        "t_end": m["t_end"] if m["detected"] else float("nan"),
+        "motion_duration_s": m["duration_s"] if m["detected"] else 0.0,
+        "velocity_threshold": m["effective_velocity_threshold"],
+        "position_threshold": m["position_threshold"],
+        "metric_window": res.metric_window_label(),
+        "filter_applied": bool(fi.get("applied")),
+        "filter_method": fi.get("method", "-"),
+        "filter_params": fi.get("params", "-"),
+        "filter_note": fi.get("note", ""),
+        "processed_at": res.processed_at,
+        "axis": axis,
+        "figures": {},
+        "skipped": [],
+    }
+
+
+def process_multiple_csvs(paths, tmp_dir, progress_cb=None):
+    """
+    Procesa la lista de CSV con EXACTAMENTE el mismo motor que el flujo
+    individual.  Un archivo con error queda registrado y no detiene los demas.
+
+    Devuelve la lista de resumenes (uno por archivo, en el orden seleccionado).
+    """
+    entries = []
+    total = len(paths)
+    for i, path in enumerate(paths, start=1):
+        if progress_cb is not None:
+            progress_cb(i, total, os.path.basename(path))
+
+        figures = None
+        try:
+            res = analyze_file(path)                  # mismo motor de analisis
+            figures, skipped = build_all_figures(res)  # mismas figuras
+        except AnalysisError as exc:
+            entries.append({"index": i, "path": os.path.abspath(path),
+                            "name": os.path.basename(path), "ok": False,
+                            "error": str(exc), "figures": {}, "skipped": []})
+            continue
+        except Exception as exc:  # noqa: BLE001 - un CSV roto no aborta el grupo
+            entries.append({"index": i, "path": os.path.abspath(path),
+                            "name": os.path.basename(path), "ok": False,
+                            "error": "Error inesperado: %s" % exc,
+                            "figures": {}, "skipped": []})
+            continue
+
+        try:
+            entry = summarize_result_for_group(res, i, path)
+            entry["skipped"] = skipped
+            entry["figures"] = render_figures_to_tempdir(figures, tmp_dir, i)
+            entries.append(entry)
+        finally:
+            # liberar figuras y resultado antes del siguiente CSV
+            if figures:
+                for fig in figures.values():
+                    _release_figure(fig)
+            figures = None
+            res = None
+    return entries
+
+
+# -----------------------------------------------------------------------------
+# Construccion del documento
+# -----------------------------------------------------------------------------
+
+def add_report_cover(document, paths, generated_at):
+    """Portada limpia y tecnica + lista de archivos analizados."""
+    _add_paragraph(document)
+    _add_paragraph(document, "ANALISIS DE TELEMETRIA KUKA", bold=True,
+                   size_pt=24, align=_DocxAlign.CENTER)
+    _add_paragraph(document, "ESTUDIO COMPARATIVO KRL / MOVEIT2", bold=True,
+                   size_pt=16, align=_DocxAlign.CENTER)
+    _add_paragraph(document)
+    _add_paragraph(document, "Informe de procesamiento multiple",
+                   size_pt=13, align=_DocxAlign.CENTER)
+    _add_paragraph(document)
+    _add_paragraph(document, "Fecha de generacion: %s"
+                   % generated_at.strftime("%d/%m/%Y %H:%M"),
+                   size_pt=11, align=_DocxAlign.CENTER)
+    _add_paragraph(document, "Cantidad de archivos procesados: %d" % len(paths),
+                   size_pt=11, align=_DocxAlign.CENTER)
+    _add_paragraph(document, "Herramienta: analisis_comparativo_gui.py v%s" % APP_VERSION,
+                   size_pt=9, align=_DocxAlign.CENTER)
+    _add_paragraph(document)
+
+    _add_paragraph(document, "ARCHIVOS ANALIZADOS", bold=True, size_pt=12)
+    for i, path in enumerate(paths, start=1):
+        par = document.add_paragraph("%d. %s" % (i, os.path.basename(path)))
+        par.paragraph_format.space_after = _DocxPt(2)
+    _add_page_break(document)
+
+
+def add_group_summary(document, entries):
+    """1. RESUMEN GENERAL: tabla con una fila por CSV."""
+    document.add_heading("1. RESUMEN GENERAL", level=1)
+    document.add_heading("1.1 Tabla general de ensayos", level=2)
+
+    headers = ["Ensayo", "Archivo", "Muestras", "Frecuencia [Hz]",
+               "Periodo medio [ms]", "Periodo std [ms]", "Inicio mov. [s]",
+               "Fin mov. [s]", "Duracion mov. [s]", "Movimiento"]
+    rows = []
+    for e in entries:
+        if not e["ok"]:
+            rows.append([e["index"], e["name"], "-", "-", "-", "-", "-", "-",
+                         "-", "NO PROCESADO"])
+            continue
+        rows.append([
+            e["index"], e["name"], e["n_samples"],
+            _fmt(e["freq_hz"], 3), _fmt(e["dt_mean_ms"], 2),
+            _fmt(e["dt_std_ms"], 2), _fmt(e["t_start"], 3),
+            _fmt(e["t_end"], 3), _fmt(e["motion_duration_s"], 3),
+            "Si" if e["motion_detected"] else "No",
+        ])
+    widths = [0.6, 3.0, 0.8, 0.85, 0.9, 0.85, 0.8, 0.75, 0.9, 1.05]
+    _add_table(document, headers, rows, widths_in=widths, font_pt=8)
+    _add_paragraph(document)
+
+
+def add_group_statistics(document, entries):
+    """1.2 estadisticos generales y 1.3 estadisticos articulares entre ensayos."""
+    ok_entries = [e for e in entries if e["ok"]]
+
+    document.add_heading("1.2 Estadisticos generales del grupo", level=2)
+    if not ok_entries:
+        _add_paragraph(document, "No hay ensayos procesados correctamente: no "
+                                 "es posible calcular estadisticos del grupo.")
+        _add_paragraph(document)
+        return
+
+    freqs = [e["freq_hz"] for e in ok_entries]
+    durations_all = [e["duration_s"] for e in ok_entries]
+    moving = [e for e in ok_entries if e["motion_detected"]]
+    motion_durations = [e["motion_duration_s"] for e in moving]
+
+    f = _mean_std_min_max(freqs)
+    d = _mean_std_min_max(durations_all)
+    md = _mean_std_min_max(motion_durations)
+
+    rows = [
+        ["Cantidad de ensayos procesados", len(ok_entries), "-"],
+        ["Ensayos con movimiento detectado", len(moving), "-"],
+        ["Ensayos sin movimiento detectado", len(ok_entries) - len(moving), "-"],
+        ["Muestras totales analizadas", sum(e["n_samples"] for e in ok_entries), "-"],
+        ["Frecuencia promedio", _fmt(f["mean"], 3), "Hz"],
+        ["Frecuencia minima", _fmt(f["min"], 3), "Hz"],
+        ["Frecuencia maxima", _fmt(f["max"], 3), "Hz"],
+        ["Desviacion estandar de la frecuencia", _fmt(f["std"], 3), "Hz"],
+        ["Duracion total registrada promedio", _fmt(d["mean"], 3), "s"],
+        ["Duracion total registrada minima", _fmt(d["min"], 3), "s"],
+        ["Duracion total registrada maxima", _fmt(d["max"], 3), "s"],
+        ["Duracion de movimiento promedio *", _fmt(md["mean"], 3), "s"],
+        ["Duracion de movimiento minima *", _fmt(md["min"], 3), "s"],
+        ["Duracion de movimiento maxima *", _fmt(md["max"], 3), "s"],
+        ["Desviacion estandar de la duracion de movimiento *", _fmt(md["std"], 3), "s"],
+    ]
+    _add_table(document, ["Parametro", "Valor", "Unidad"], rows,
+               widths_in=[4.2, 1.8, 1.2])
+    _add_paragraph(document,
+                   "* Calculado unicamente sobre los %d ensayo(s) en los que se "
+                   "detecto movimiento, para no sesgar la media con los ensayos "
+                   "estaticos (duracion 0.000 s)." % len(moving), size_pt=8)
+    _add_paragraph(document)
+
+    document.add_heading("1.3 Estadisticos articulares entre ensayos", level=2)
+    _add_paragraph(document,
+                   "Cada valor resume, entre los %d ensayos procesados, la metrica "
+                   "obtenida individualmente en cada CSV (el valor concreto de cada "
+                   "ensayo aparece en la tabla de su propia seccion)."
+                   % len(ok_entries), size_pt=9)
+
+    for key, label, unit, decimals in GROUP_AXIS_METRICS:
+        _add_paragraph(document, "%s [%s]" % (label, unit), bold=True, size_pt=10)
+        rows = []
+        for name in AXIS_NAMES:
+            values = [e["axis"][name].get(key, float("nan")) for e in ok_entries]
+            st = _mean_std_min_max(values)
+            rows.append([name, _fmt(st["mean"], decimals), _fmt(st["std"], decimals),
+                         _fmt(st["min"], decimals), _fmt(st["max"], decimals),
+                         st["n"]])
+        _add_table(document, ["Eje", "Media", "Desv. est.", "Minimo", "Maximo",
+                              "N ensayos"], rows,
+                   widths_in=[0.7, 1.6, 1.6, 1.6, 1.6, 1.0])
+        _add_paragraph(document, size_pt=4)
+
+
+def add_info_table(document, entry, section_number):
+    """X.1 adquisicion y X.2 deteccion de movimiento."""
+    document.add_heading("%d.1 Informacion de adquisicion" % section_number, level=2)
+    rows = [
+        ["Nombre del archivo", entry["name"], "-"],
+        ["Numero de muestras validas", entry["n_samples"], "-"],
+        ["Filas del CSV original", entry["rows_original"], "-"],
+        ["Duracion total registrada", _fmt(entry["duration_s"], 3), "s"],
+        ["Frecuencia efectiva", _fmt(entry["freq_hz"], 3), "Hz"],
+        ["Periodo medio", _fmt(entry["dt_mean_ms"], 3), "ms"],
+        ["Periodo mediano", _fmt(entry["dt_median_ms"], 3), "ms"],
+        ["Desviacion estandar del periodo", _fmt(entry["dt_std_ms"], 3), "ms"],
+        ["Periodo minimo", _fmt(entry["dt_min_ms"], 3), "ms"],
+        ["Periodo maximo", _fmt(entry["dt_max_ms"], 3), "ms"],
+    ]
+    _add_table(document, ["Parametro", "Valor", "Unidad"], rows,
+               widths_in=[3.6, 2.4, 1.0])
+    _add_paragraph(document)
+
+    document.add_heading("%d.2 Deteccion de movimiento y procesamiento"
+                         % section_number, level=2)
+    rows = [
+        ["Movimiento detectado", "Si" if entry["motion_detected"] else "No", "-"],
+        ["Inicio del movimiento", _fmt(entry["t_start"], 3), "s"],
+        ["Fin del movimiento", _fmt(entry["t_end"], 3), "s"],
+        ["Duracion del movimiento", _fmt(entry["motion_duration_s"], 3), "s"],
+        ["Umbral de velocidad efectivo", _fmt(entry["velocity_threshold"], 6), "rad/s"],
+        ["Umbral de recorrido", _fmt(entry["position_threshold"], 6), "rad"],
+        ["Intervalo usado en las metricas", entry["metric_window"], "-"],
+        ["Filtrado aplicado", "Si" if entry["filter_applied"] else "No", "-"],
+        ["Metodo de filtrado", entry["filter_method"], "-"],
+        ["Parametros del filtrado", entry["filter_params"], "-"],
+        ["Metodo de derivacion",
+         "numpy.gradient sobre tiempo real no uniforme", "-"],
+    ]
+    _add_table(document, ["Parametro", "Valor", "Unidad"], rows,
+               widths_in=[2.6, 6.4, 0.9])
+    if not entry["motion_detected"]:
+        _add_paragraph(document,
+                       "Sin movimiento detectado. Motivo: %s Las metricas "
+                       "cinematicas de la tabla siguiente corresponden al ruido "
+                       "residual del registro completo; no se atribuye a este "
+                       "ensayo velocidad, aceleracion, jerk ni tiempo de "
+                       "ejecucion significativos." % entry["motion_reason"],
+                       size_pt=9)
+    if entry["filter_note"]:
+        _add_paragraph(document, "Observacion del filtrado: %s"
+                       % entry["filter_note"], size_pt=9)
+    _add_paragraph(document)
+
+
+def add_metrics_table(document, entry, section_number):
+    """X.3 tabla de metricas por articulacion (mismos valores que la GUI)."""
+    document.add_heading("%d.3 Metricas articulares" % section_number, level=2)
+    headers = ["Eje", "Vel. max. abs. [rad/s]", "Vel. RMS [rad/s]",
+               "Acc. max. abs. [rad/s2]", "Acc. RMS [rad/s2]",
+               "Jerk max. abs. [rad/s3]", "Jerk RMS [rad/s3]", "dq max. [rad]"]
+    rows = []
+    for name in AXIS_NAMES:
+        a = entry["axis"][name]
+        rows.append([
+            name,
+            _fmt(a["vel_max_abs_rad_s"], 5), _fmt(a["vel_rms_rad_s"], 5),
+            _fmt(a["acc_max_abs_rad_s2"], 5), _fmt(a["acc_rms_rad_s2"], 5),
+            _fmt(a["jerk_max_abs_rad_s3"], 5), _fmt(a["jerk_rms_rad_s3"], 5),
+            _fmt(a["delta_q_max_rad"], 6),
+        ])
+    _add_table(document, headers, rows,
+               widths_in=[0.6, 1.4, 1.25, 1.45, 1.3, 1.45, 1.3, 1.15], font_pt=8)
+    _add_paragraph(document)
+
+    document.add_heading("%d.4 Posicion articular (resumen numerico)"
+                         % section_number, level=2)
+    headers = ["Eje", "Inicial [deg]", "Final [deg]", "Minima [deg]",
+               "Maxima [deg]", "Recorrido absoluto [deg]"]
+    rows = []
+    for name in AXIS_NAMES:
+        a = entry["axis"][name]
+        rows.append([name, _fmt(a["pos_inicial_deg"], 4), _fmt(a["pos_final_deg"], 4),
+                     _fmt(a["pos_min_deg"], 4), _fmt(a["pos_max_deg"], 4),
+                     _fmt(a["recorrido_abs_deg"], 4)])
+    _add_table(document, headers, rows,
+               widths_in=[0.7, 1.6, 1.6, 1.6, 1.6, 2.0])
+    _add_paragraph(document)
+
+
+def add_single_test_section(document, entry, section_number):
+    """Seccion completa de un ensayo procesado correctamente."""
+    document.add_heading("%d. ENSAYO %d" % (section_number, entry["index"]), level=1)
+    _add_paragraph(document, "Archivo: %s" % entry["name"], bold=True, size_pt=11)
+    _add_paragraph(document, entry["path"], size_pt=8)
+
+    add_info_table(document, entry, section_number)
+    add_metrics_table(document, entry, section_number)
+
+    fig_number = 0
+    sub_number = 4  # X.1 adquisicion, X.2 movimiento, X.3 metricas, X.4 posicion num.
+    for key, sub_title, caption in GROUP_FIGURE_ORDER:
+        sub_number += 1
+        document.add_heading("%d.%d %s" % (section_number, sub_number, sub_title),
+                             level=2)
+        image_path = entry["figures"].get(key)
+        if image_path is None or not os.path.isfile(image_path):
+            reason = "datos no disponibles en el CSV"
+            for fname, why in entry.get("skipped", []):
+                if FIG_FILENAMES.get(key) == fname:
+                    reason = why
+            _add_paragraph(document,
+                           "Grafica no generada: %s." % reason, size_pt=9)
+            continue
+        fig_number += 1
+        add_matplotlib_figure_to_docx(document, image_path)
+        add_figure_caption(document, "Figura %d.%d. %s del ensayo %d (%s)."
+                           % (section_number, fig_number, caption,
+                              entry["index"], entry["name"]))
+
+
+def add_error_section(document, entry, section_number):
+    """Seccion de un CSV que no pudo procesarse. No detiene el resto."""
+    document.add_heading("%d. ENSAYO %d - NO PROCESADO"
+                         % (section_number, entry["index"]), level=1)
+    _add_paragraph(document, "Archivo: %s" % entry["name"], bold=True, size_pt=11)
+    _add_paragraph(document, entry["path"], size_pt=8)
+    _add_paragraph(document, "Estado: No procesado", bold=True)
+    _add_paragraph(document, "Motivo:")
+    for line in str(entry["error"]).splitlines():
+        if line.strip():
+            _add_paragraph(document, line.strip(), size_pt=9)
+    _add_paragraph(document,
+                   "El resto de los archivos del grupo se proceso con normalidad.",
+                   size_pt=9)
+
+
+def add_processing_summary(document, entries, paths, generated_at, section_number):
+    """Seccion final: recuento de archivos y trazabilidad."""
+    document.add_heading("%d. RESUMEN DE PROCESAMIENTO" % section_number, level=1)
+    ok_entries = [e for e in entries if e["ok"]]
+    err_entries = [e for e in entries if not e["ok"]]
+
+    rows = [
+        ["Archivos seleccionados", len(paths)],
+        ["Procesados correctamente", len(ok_entries)],
+        ["Con errores", len(err_entries)],
+        ["Fecha de generacion", generated_at.strftime("%d/%m/%Y %H:%M:%S")],
+        ["Herramienta", "analisis_comparativo_gui.py v%s" % APP_VERSION],
+        ["Metodo de derivacion", "numpy.gradient(y, t), paso no uniforme"],
+        ["SciPy disponible", "Si (v%s)" % SCIPY_VERSION if SCIPY_AVAILABLE else "No"],
+        ["Resolucion de las figuras", "%d dpi" % REPORT_FIGURE_DPI],
+    ]
+    _add_table(document, ["Parametro", "Valor"], rows, widths_in=[3.6, 5.0])
+    _add_paragraph(document)
+
+    if err_entries:
+        _add_paragraph(document, "Archivos con error", bold=True)
+        _add_table(document, ["Ensayo", "Archivo", "Motivo"],
+                   [[e["index"], e["name"],
+                     " ".join(str(e["error"]).split())[:300]] for e in err_entries],
+                   widths_in=[0.7, 2.8, 6.0], font_pt=8)
+        _add_paragraph(document)
+
+    _add_paragraph(document, "Limitaciones", bold=True)
+    _add_paragraph(document,
+                   "Indice completo de singularidad: no calculado. Requiere el "
+                   "modelo cinematico / Jacobiano del KUKA KR6 R900 (parametros "
+                   "DH o URDF); con las columnas del CSV no hay informacion "
+                   "suficiente y no se implementa ninguna formula arbitraria.",
+                   size_pt=9)
+    _add_paragraph(document,
+                   "Metricas que requieren medicion experimental externa y que "
+                   "por tanto no se calculan ni se estiman a partir de la "
+                   "telemetria: %s." % ", ".join(EXTERNAL_METRICS).lower(),
+                   size_pt=9)
+
+
+def save_group_report(document, path):
+    """Escribe el .docx. Los errores de escritura se propagan como AnalysisError."""
+    folder = os.path.dirname(path)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as exc:
+        raise AnalysisError("No se pudo crear la carpeta de informes:\n%s\n\n%s"
+                            % (folder, exc))
+    try:
+        document.save(path)
+    except PermissionError as exc:
+        raise AnalysisError(
+            "No se pudo escribir el documento (permiso denegado o archivo "
+            "abierto en Word/LibreOffice):\n%s\n\n%s" % (path, exc))
+    except OSError as exc:
+        raise AnalysisError("No se pudo escribir el documento:\n%s\n\n%s"
+                            % (path, exc))
+    return path
+
+
+def generate_group_report(paths, progress_cb=None):
+    """
+    Punto de entrada del informe multiple.
+
+    Procesa cada CSV con el motor existente, construye UN unico .docx y borra
+    los PNG temporales.  Devuelve (ruta_docx, entries, n_ok, n_error).
+    """
+    if not DOCX_AVAILABLE:
+        raise AnalysisError(docx_requirement_message())
+    if not paths:
+        raise AnalysisError("No se selecciono ningun archivo CSV.")
+
+    generated_at = datetime.datetime.now()
+    tmp_dir = tempfile.mkdtemp(prefix="kuka_informe_grupal_")
+    try:
+        entries = process_multiple_csvs(paths, tmp_dir, progress_cb=progress_cb)
+
+        if progress_cb is not None:
+            progress_cb(len(paths), len(paths), "Construyendo el documento Word...")
+
+        document = _new_report_document()
+        add_report_cover(document, paths, generated_at)
+        add_group_summary(document, entries)
+        add_group_statistics(document, entries)
+
+        for offset, entry in enumerate(entries):
+            section_number = offset + 2          # la seccion 1 es el resumen general
+            _add_page_break(document)
+            if entry["ok"]:
+                add_single_test_section(document, entry, section_number)
+            else:
+                add_error_section(document, entry, section_number)
+
+        _add_page_break(document)
+        add_processing_summary(document, entries, paths, generated_at,
+                               len(entries) + 2)
+
+        out_path = save_group_report(document, group_report_path(generated_at))
+    finally:
+        # los PNG temporales se eliminan siempre; los CSV originales y los
+        # resultados individuales ya existentes no se tocan nunca
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    n_ok = sum(1 for e in entries if e["ok"])
+    return out_path, entries, n_ok, len(entries) - n_ok
+
+
+def open_document(path):
+    """Abre el .docx con la aplicacion predeterminada del sistema, sin shell."""
+    if not path or not os.path.isfile(path):
+        raise AnalysisError("El documento no existe:\n%s" % path)
+    try:
+        if sys.platform.startswith("linux"):
+            subprocess.Popen(["xdg-open", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif os.name == "nt":
+            os.startfile(path)  # noqa: F821  (solo existe en Windows)
+        else:
+            raise AnalysisError("Plataforma no soportada para abrir documentos: %s"
+                                % sys.platform)
+    except FileNotFoundError:
+        raise AnalysisError("No se encontro una aplicacion para abrir el "
+                            "documento.\nArchivo:\n%s" % path)
+    except OSError as exc:
+        raise AnalysisError("No se pudo abrir el documento.\nDetalle: %s" % exc)
+
+
+# =============================================================================
 # 12. INTERFAZ GRAFICA
 # =============================================================================
 
@@ -1512,6 +2295,13 @@ class ComparativeAnalyzerApp(tk.Tk):
         self._rviz_messages_published = 0
         self._rviz_invalid_samples = 0
 
+        # --- estado del informe grupal en Word (funcion aditiva) -------------
+        self._group_running = False
+        self._group_queue = None
+        self._group_after_id = None
+        self._group_saved_states = []
+        self._group_report_path = None
+
         self._build_widgets()
         self._reset_state(clear_file=True)
 
@@ -1555,6 +2345,15 @@ class ComparativeAnalyzerApp(tk.Tk):
         self.btn_process.pack(side="left", padx=(8, 0))
         self.btn_clear = ttk.Button(buttons, text="Limpiar", command=self.on_clear)
         self.btn_clear.pack(side="left", padx=(8, 0))
+
+        # Flujo independiente: varios CSV -> un unico documento Word.
+        ttk.Separator(buttons, orient="vertical").pack(side="left", fill="y",
+                                                       padx=(14, 14))
+        self.btn_group_report = ttk.Button(
+            buttons, text="Generar informe de varios CSV",
+            command=self.on_generate_group_report)
+        self.btn_group_report.pack(side="left")
+
         top.columnconfigure(2, weight=1)
 
         # la barra inferior se empaqueta antes que el cuaderno (side="bottom")
@@ -1628,6 +2427,28 @@ class ComparativeAnalyzerApp(tk.Tk):
         self.btn_open = ttk.Button(action, text="Abrir carpeta de resultados",
                                    command=self.on_open_folder, state="disabled")
         self.btn_open.pack(side="left", padx=(8, 0))
+        self.btn_open_report = ttk.Button(action, text="Abrir informe",
+                                          command=self.on_open_report,
+                                          state="disabled")
+        self.btn_open_report.pack(side="left", padx=(8, 0))
+
+        # --- progreso del informe grupal (oculto mientras no se usa) ---------
+        self.group_progress_frame = ttk.Frame(bottom)
+        self.group_progress_frame.grid(row=3, column=0, columnspan=4,
+                                       sticky="we", pady=(6, 0))
+        self.group_progress_var = tk.StringVar(value="")
+        ttk.Label(self.group_progress_frame,
+                  textvariable=self.group_progress_var).pack(side="left")
+        self.group_progress = ttk.Progressbar(self.group_progress_frame,
+                                              orient="horizontal", length=300,
+                                              mode="determinate")
+        self.group_progress.pack(side="left", padx=(12, 0))
+        self.group_progress_frame.grid_remove()
+
+        self.report_var = tk.StringVar(value="Ultimo informe generado: (ninguno)")
+        ttk.Label(bottom, textvariable=self.report_var, foreground="#555555"
+                  ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
+
         bottom.columnconfigure(3, weight=1)
 
     def _make_text_view(self, parent):
@@ -2227,6 +3048,12 @@ class ComparativeAnalyzerApp(tk.Tk):
 
     def on_close(self):
         """Cierre limpio: cancelar playback, cerrar ROS2 y destruir la ventana."""
+        if self._group_after_id is not None:
+            try:
+                self.after_cancel(self._group_after_id)
+            except tk.TclError:
+                pass
+            self._group_after_id = None
         self._cancel_rviz_playback()
         self._shutdown_rviz_ros()
         try:
@@ -2276,6 +3103,169 @@ class ComparativeAnalyzerApp(tk.Tk):
             "Guardado completado",
             "Resultados guardados correctamente.\n\nCarpeta:\n%s\n\nArchivos:\n%s%s"
             % (folder, detail, extra))
+
+    # -- informe grupal en Word (funcion ADITIVA, flujo independiente) --------
+    #
+    #   Seleccionar varios CSV -> hilo de trabajo -> un unico .docx
+    #
+    #   El hilo NUNCA toca widgets: se comunica por cola y todas las
+    #   actualizaciones de la GUI ocurren en _poll_group_queue(), que corre en
+    #   el hilo principal mediante after().
+    # -------------------------------------------------------------------------
+    def _set_group_busy(self, busy, total=0):
+        """
+        Bloquea/restaura los botones durante la generacion del informe.
+
+        Guarda el estado exacto previo de cada boton y lo restaura al terminar,
+        de modo que el flujo individual queda igual que antes.
+        """
+        widgets = [self.btn_select, self.btn_process, self.btn_clear,
+                   self.btn_group_report, self.btn_plots, self.btn_rviz,
+                   self.btn_save, self.btn_open, self.btn_open_report]
+        if busy:
+            self._group_saved_states = []
+            for widget in widgets:
+                try:
+                    self._group_saved_states.append((widget, str(widget["state"])))
+                    widget.configure(state="disabled")
+                except tk.TclError:
+                    pass
+            self.group_progress.configure(maximum=max(int(total), 1), value=0)
+            self.group_progress_var.set("Preparando...")
+            self.group_progress_frame.grid()
+        else:
+            for widget, state in self._group_saved_states:
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+            self._group_saved_states = []
+            self.group_progress_var.set("")
+            self.group_progress_frame.grid_remove()
+
+    def on_generate_group_report(self):
+        """Selecciona varios CSV y lanza la generacion del informe en Word."""
+        if self._group_running:
+            messagebox.showinfo("Informe en curso",
+                                "Ya hay un informe generandose. Espere a que "
+                                "termine.")
+            return
+        if not DOCX_AVAILABLE:
+            messagebox.showerror("Falta la libreria python-docx",
+                                 docx_requirement_message())
+            return
+
+        initial = os.path.join(os.path.dirname(SCRIPT_DIR), "logs")
+        if not os.path.isdir(initial):
+            initial = os.path.dirname(SCRIPT_DIR)
+        selected = filedialog.askopenfilenames(
+            title="Seleccionar los CSV del grupo (seleccion multiple)",
+            initialdir=initial,
+            filetypes=[("Archivos CSV", "*.csv"),
+                       ("CSV de telemetria", "kuka_telemetry_*.csv"),
+                       ("Todos los archivos", "*.*")])
+        if not selected:
+            return
+
+        paths = list(selected)
+        self._group_running = True
+        self._group_report_path = None
+        self._group_queue = _queue.Queue()
+        self._set_group_busy(True, len(paths))
+        self._set_status("Generando informe de %d archivos..." % len(paths),
+                         "#ef6c00")
+
+        worker = threading.Thread(target=self._group_worker,
+                                  args=(paths, self._group_queue), daemon=True)
+        worker.start()
+        self._group_after_id = self.after(150, self._poll_group_queue)
+
+    def _group_worker(self, paths, out_queue):
+        """Hilo secundario: solo calcula y publica mensajes en la cola."""
+        def progress_cb(index, total, name):
+            out_queue.put(("progress", index, total, name))
+
+        try:
+            out_path, entries, n_ok, n_err = generate_group_report(
+                paths, progress_cb=progress_cb)
+            out_queue.put(("done", out_path, n_ok, n_err, len(paths)))
+        except AnalysisError as exc:
+            out_queue.put(("error", str(exc)))
+        except Exception as exc:  # noqa: BLE001 - la GUI nunca debe cerrarse
+            out_queue.put(("error",
+                           "Error inesperado al generar el informe:\n\n%s\n\n%s"
+                           % (exc, traceback.format_exc(limit=3))))
+
+    def _poll_group_queue(self):
+        """Hilo principal: consume la cola y actualiza los widgets."""
+        self._group_after_id = None
+        finished = False
+        try:
+            while True:
+                message = self._group_queue.get_nowait()
+                kind = message[0]
+
+                if kind == "progress":
+                    _, index, total, name = message
+                    self.group_progress.configure(maximum=max(int(total), 1),
+                                                  value=int(index))
+                    if str(name).lower().endswith(".csv"):
+                        text = "Procesando archivo %d de %d: %s" % (index, total, name)
+                    else:
+                        text = str(name)
+                    self.group_progress_var.set(text)
+                    self._set_status(text, "#ef6c00")
+
+                elif kind == "done":
+                    _, out_path, n_ok, n_err, n_selected = message
+                    finished = True
+                    self._group_running = False
+                    self._set_group_busy(False)
+                    self._group_report_path = out_path
+                    self.btn_open_report.configure(state="normal")
+                    self.report_var.set("Ultimo informe generado: %s" % out_path)
+                    if n_err:
+                        self._set_status(
+                            "Informe generado con %d archivo(s) con error." % n_err,
+                            "#ef6c00")
+                        messagebox.showwarning(
+                            "Informe generado",
+                            "Archivos seleccionados: %d\nProcesados correctamente: "
+                            "%d\nErrores: %d\n\nEl informe fue generado incluyendo "
+                            "el detalle del archivo con error.\n\nDocumento:\n%s"
+                            % (n_selected, n_ok, n_err, out_path))
+                    else:
+                        self._set_status("Informe generado correctamente.", "#1b5e20")
+                        messagebox.showinfo(
+                            "Informe generado",
+                            "Informe generado correctamente.\n\nArchivos "
+                            "seleccionados: %d\nProcesados correctamente: %d\n"
+                            "Errores: 0\n\nDocumento:\n%s"
+                            % (n_selected, n_ok, out_path))
+                    break
+
+                elif kind == "error":
+                    _, detail = message
+                    finished = True
+                    self._group_running = False
+                    self._set_group_busy(False)
+                    self._set_status("Error al generar el informe.", "#b71c1c")
+                    messagebox.showerror("No se pudo generar el informe", detail)
+                    break
+        except _queue.Empty:
+            pass
+
+        if self._group_running and not finished:
+            self._group_after_id = self.after(150, self._poll_group_queue)
+
+    def on_open_report(self):
+        """Abre el ultimo informe generado con la aplicacion del sistema."""
+        if not self._group_report_path:
+            return
+        try:
+            open_document(self._group_report_path)
+        except AnalysisError as exc:
+            messagebox.showerror("No se pudo abrir el informe", str(exc))
 
     def on_open_folder(self):
         if not self.last_saved_folder:
