@@ -35,6 +35,7 @@ except ImportError as e:
 
 from kuka_gui_control.dual_command_model import DualCommandModel
 from kuka_gui_control.trajectory_panel import TrajectorySequencePanel
+from kuka_gui_control.trajectory_batch_panel import TrajectoryBatchPanel
 from kuka_gui_control.joint_command_model import AXES, CARTESIAN_AXES
 
 # ---------------------------------------------------------------------------
@@ -782,6 +783,20 @@ class DualKukaRvizWindow(QMainWindow):
         )
         main_layout.addWidget(self._trajectory_panel)
 
+        # ── Modo LOTE (capa AÑADIDA, ruta paralela) ─────────────────
+        # Panel independiente, debajo del anterior. El panel base y su
+        # botón ENVIAR TRAYECTORIA no se han tocado; este usa el pipeline
+        # de lotes y sólo funciona con los archivos _better cargados en el
+        # controlador. Reutiliza el MISMO RosAxisMoveBridge y la MISMA
+        # función de garra.
+        self._trajectory_batch_panel = TrajectoryBatchPanel(
+            model=self._model,
+            kuka_bridge=self._kuka_bridge,
+            config=self._config,
+            gripper_send_fn=self._send_gripper_command,
+        )
+        main_layout.addWidget(self._trajectory_batch_panel)
+
         self._stack.addWidget(page)
         self._refresh_table()
         self._refresh_inputs()
@@ -1468,6 +1483,8 @@ class DualKukaRvizWindow(QMainWindow):
             self._feedback_timer.stop()
         if getattr(self, '_trajectory_panel', None) is not None:
             self._trajectory_panel.shutdown()
+        if getattr(self, '_trajectory_batch_panel', None) is not None:
+            self._trajectory_batch_panel.shutdown()
         if self._kuka_bridge.is_running:
             self._kuka_bridge.stop()
         event.accept()

@@ -35,6 +35,7 @@ Sistema de control para el robot KUKA KR6 R900 mediante una interfaz gráfica en
 14. [Problemas Comunes](#14-problemas-comunes)
 15. [Notas Importantes](#15-notas-importantes)
 16. [Secuencias de Trayectorias](#16-secuencias-de-trayectorias)
+17. [Modo LOTE (batch)](#17-modo-lote-batch)
 
 ---
 
@@ -383,3 +384,60 @@ homónimos ni el `Publisher count: 2`.
 Contrato JSON completo, esquema del archivo guardado, validaciones, pacing,
 manejo de errores y módulos nuevos:
 [`src/kuka_gui_control/README.md` § 13](src/kuka_gui_control/README.md).
+
+---
+
+## 17. Modo LOTE (batch)
+
+Segunda opción de ejecución física, **añadida** junto al modo punto a punto.
+El modo base no cambió en ninguna capa y sigue siendo el comportamiento por
+defecto.
+
+### 17.1 El problema que resuelve
+
+El modo base manda **un punto por ida y vuelta de red**: envía, espera llegada,
+envía el siguiente. Sobre 100+ puntos de MoveIt ese tiempo muerto es lo que
+produce el patrón avanza-frena-avanza-frena.
+
+En modo lote ROS manda bloques de hasta 20 puntos. El KUKA los guarda
+localmente y los ejecuta uno tras otro **sin esperar red entre ellos**, y ROS
+recarga el bloque siguiente mientras el robot todavía se mueve.
+
+> Cada punto sigue siendo un **PTP de parada exacta**. No cambia el tipo de
+> movimiento: sólo desaparece la espera de red. `C_PTP` queda deliberadamente
+> fuera de esta implementación.
+
+### 17.2 Base vs mejorado
+
+| Base (estudio comparativo) | Mejorado (esta fase) |
+|---|---|
+| `XmlDualMove.src` | `XmlDualMove_better.src` |
+| `XmlDualMove.xml` | `XmlDualMove_better.xml` |
+| `sps_submit.sub` | `sps_submit_better.sub` |
+| `config_submit.dat` | `config_submit_better.dat` |
+| `eki_axis_move_node` | `eki_axis_move_better_node` |
+| Botón `ENVIAR TRAYECTORIA` | Botón `ENVIAR TRAYECTORIA OPTIMIZADA` |
+
+Los `_better` son **superconjuntos estrictos**: con ellos cargados,
+`XmlDualMove.src` sigue funcionando igual, así que el baseline del estudio
+comparativo queda preservado y reproducible.
+
+### 17.3 Trade-off de DETENER
+
+`DETENER` levanta `XD_ABORT_BATCH`: el robot **termina el punto en curso y no
+arranca el siguiente**. Nunca se interrumpe un PTP a mitad.
+
+> El tiempo de reacción **no depende del tamaño de lote**. Lo acota el avance
+> de KRL (`$ADVANCE`), y el bucle de lote lo pone a 0 mientras dura, así que el
+> aborto surte efecto tras **un solo punto**, sea el lote de 5 o de 20.
+
+### 17.4 `WAIT SEC 0.1`
+
+Se dejó **intacto a propósito** en todos los archivos: mismo sitio, mismo
+valor. Simplemente ya no se interpone entre los puntos de un mismo lote.
+
+### 17.5 Documentación detallada
+
+Contrato de datos, diseño del mailbox, dimensionado del lote frente al límite
+de la memoria EKI, protecciones y parámetros:
+[`src/kuka_gui_control/README.md` § 14](src/kuka_gui_control/README.md).

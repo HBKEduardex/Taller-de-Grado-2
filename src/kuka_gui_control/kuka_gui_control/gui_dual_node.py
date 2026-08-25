@@ -99,6 +99,19 @@ DEFAULT_CONFIG = {
     'trajectory_max_delta_deg':             10.0,
     'trajectory_kuka_ptp_velocity_normal_pct':  30.0,
     'trajectory_kuka_ptp_velocity_reduced_pct': 5.0,
+
+    # ── Modo LOTE (capa AÑADIDA) ─────────────────────────────────────
+    # Puntos por lote. Debe ser <= XD_BATCH_MAX de config_submit_better.dat
+    # y <= max_batch_size de axis_move_better.yaml (ambos 20).
+    'trajectory_batch_max_size':            20,
+    # Reponer el siguiente sub-lote cuando quedan por consumir menos de esta
+    # fracción del lote en curso.
+    'trajectory_batch_refill_threshold':    0.5,
+    # Sin progreso del contador de puntos consumidos durante este tiempo,
+    # se aborta la secuencia.
+    'trajectory_batch_stall_timeout_sec':   20.0,
+    # Reenvío del lote mientras el KUKA no acusa haberlo recibido.
+    'trajectory_batch_resend_period_sec':   0.5,
 }
 
 
@@ -145,6 +158,12 @@ _SCALAR_PARAMS = {
         'trajectory_kuka_ptp_velocity_normal_pct',
     'trajectory_kuka_ptp_velocity_reduced_pct':
         'trajectory_kuka_ptp_velocity_reduced_pct',
+
+    # Modo LOTE
+    'trajectory_batch_max_size':          'trajectory_batch_max_size',
+    'trajectory_batch_refill_threshold':  'trajectory_batch_refill_threshold',
+    'trajectory_batch_stall_timeout_sec': 'trajectory_batch_stall_timeout_sec',
+    'trajectory_batch_resend_period_sec': 'trajectory_batch_resend_period_sec',
 }
 
 

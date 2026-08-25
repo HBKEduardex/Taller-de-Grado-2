@@ -1,0 +1,108 @@
+"""
+axis_move_better.launch.py — bridge node with BATCH support.
+
+Copy of axis_move.launch.py pointing at the batch-capable node and its own
+YAML. axis_move.launch.py is NOT modified and keeps launching the baseline.
+
+Run EITHER this OR axis_move.launch.py, never both: they share TCP port
+59153, the same node name and the same topics.
+
+On the controller you need the _better files loaded:
+  XmlDualMove_better.xml, sps_submit_better.sub, config_submit_better.dat,
+  and XmlDualMove_better.src selected as the robot program.
+
+Usage:
+  ros2 launch kuka_eki_bridge axis_move_better.launch.py
+"""
+
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    """Generate the launch description for the axis move node."""
+
+    pkg_share = get_package_share_directory('kuka_eki_bridge')
+    default_config = os.path.join(
+        pkg_share, 'config', 'axis_move_better.yaml'
+    )
+
+    # ── Launch arguments ─────────────────────────────────────────────
+    declare_bind_host = DeclareLaunchArgument(
+        'bind_host',
+        default_value='0.0.0.0',
+        description='IP address to bind the TCP server.',
+    )
+
+    declare_port = DeclareLaunchArgument(
+        'port',
+        default_value='59153',
+        description='TCP port for the axis move server.',
+    )
+
+    declare_safe_mode = DeclareLaunchArgument(
+        'safe_mode',
+        default_value='true',
+        description='If true, EnableMove is always forced to 0.',
+    )
+
+    declare_allow_motion = DeclareLaunchArgument(
+        'allow_motion_commands',
+        default_value='false',
+        description='If false, EnableMove is always forced to 0 (second safety gate).',
+    )
+
+    declare_log_feedback = DeclareLaunchArgument(
+        'log_feedback_values',
+        default_value='true',
+        description='Print a compact line per cycle with axis values.',
+    )
+
+    declare_log_cmd_xml = DeclareLaunchArgument(
+        'log_command_xml',
+        default_value='true',
+        description='Log the <Command> XML sent to the KUKA.',
+    )
+
+    declare_log_raw_xml = DeclareLaunchArgument(
+        'log_raw_robot_xml',
+        default_value='false',
+        description='Log the raw <Robot> XML received from the KUKA.',
+    )
+
+    # ── Node ─────────────────────────────────────────────────────────
+    axis_move_node = Node(
+        package='kuka_eki_bridge',
+        executable='eki_axis_move_better_node',
+        name='eki_axis_move',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            default_config,
+            {
+                'bind_host': LaunchConfiguration('bind_host'),
+                'port': LaunchConfiguration('port'),
+                'safe_mode': LaunchConfiguration('safe_mode'),
+                'allow_motion_commands': LaunchConfiguration('allow_motion_commands'),
+                'log_feedback_values': LaunchConfiguration('log_feedback_values'),
+                'log_command_xml': LaunchConfiguration('log_command_xml'),
+                'log_raw_robot_xml': LaunchConfiguration('log_raw_robot_xml'),
+            },
+        ],
+    )
+
+    return LaunchDescription([
+        declare_bind_host,
+        declare_port,
+        declare_safe_mode,
+        declare_allow_motion,
+        declare_log_feedback,
+        declare_log_cmd_xml,
+        declare_log_raw_xml,
+        axis_move_node,
+    ])

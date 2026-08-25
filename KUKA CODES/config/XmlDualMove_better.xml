@@ -1,0 +1,138 @@
+<ETHERNETKRL>
+	<!-- ==================================================================
+	     XmlDualMove_better - canal EKI del modo LOTE (batch).
+	     Copia EXTENDIDA de XmlDualMove.xml. Superconjunto estricto: todos
+	     los tags del archivo base siguen aqui con el mismo nombre y el
+	     mismo tipo, asi que XmlDualMove.src (programa base del estudio
+	     comparativo) funciona igual contra este canal.
+	     Lo unico anadido son los tags Batch* y el Limit de BUFFERING.
+	     ================================================================== -->
+	<CONFIGURATION>
+		<EXTERNAL>
+			<!-- Ubuntu is the TCP server; the KUKA connects to it as client. -->
+			<IP>192.168.250.30</IP>
+			<PORT>59153</PORT>
+		</EXTERNAL>
+		<INTERNAL>
+			<!-- The channel belongs to the Submit interpreter: SPS.SUB does
+			     EKI_Init / EKI_Open and every Get/Set.  With Submit here the
+			     connection survives robot-program selection changes and is
+			     only cleared when the Submit itself is deselected. -->
+			<ENVIRONMENT>Submit</ENVIRONMENT>
+			<!-- Base file uses Limit="16" (the EthernetKRL default).  Batch
+			     mode needs more: with the array pattern a single <Command>
+			     carrying N <Batch/> elements deposits N entries into EACH of
+			     the six Command/Batch/@Ax memories, and the manual defines
+			     Limit as "numero maximo de elementos de datos que UNA memoria
+			     puede alojar (1...512)" (KST Ethernet KRL 3.0, p. 26).
+			     128 leaves 6.4x headroom over MAX_BATCH_SIZE = 20 while
+			     staying far below the documented ceiling of 512. -->
+			<BUFFERING Mode="FIFO" Limit="128"/>
+			<!-- Client mode: EKI_Open() blocks until the connection is up or
+			     this timeout expires.  Kept short so a missing Ubuntu server
+			     can never stall the PLC for long; SPS.SUB retries on a slow
+			     cadence (XD_OPEN_RETRY_CYCLES). -->
+			<TIMEOUT Connect="500"/>
+		</INTERNAL>
+	</CONFIGURATION>
+	<RECEIVE>
+		<XML>
+			<ELEMENT Tag="Command/Seq" Type="INT"/>
+			<ELEMENT Tag="Command/Mode" Type="STRING"/>
+			<ELEMENT Tag="Command/EnableMove" Type="BOOL"/>
+			
+			<!-- Ejes articulares -->
+			<ELEMENT Tag="Command/AxisTarget/@A1" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A2" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A3" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A4" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A5" Type="REAL"/>
+			<ELEMENT Tag="Command/AxisTarget/@A6" Type="REAL"/>
+
+			<!-- Herramienta Mundo (Cartesiano) -->
+			<ELEMENT Tag="Command/CartesianTarget/@X" Type="REAL"/>
+			<ELEMENT Tag="Command/CartesianTarget/@Y" Type="REAL"/>
+			<ELEMENT Tag="Command/CartesianTarget/@Z" Type="REAL"/>
+			<ELEMENT Tag="Command/CartesianTarget/@A" Type="REAL"/>
+			<ELEMENT Tag="Command/CartesianTarget/@B" Type="REAL"/>
+			<ELEMENT Tag="Command/CartesianTarget/@C" Type="REAL"/>
+
+			<!-- Garra: -1 = nada, 0 = abrir, 1 = cerrar.
+			     Only XmlDualMove.src acts on it; the SPS just stores it. -->
+			<ELEMENT Tag="Command/GripperCommand" Type="INT"/>
+
+			<!-- ===== MODO LOTE (batch) - solo XmlDualMove_better.src ======
+			     BatchCount > 0 es el UNICO discriminador de un paquete de
+			     lote.  Command/Mode sigue siendo "AxisTarget": el SPS decide
+			     el modo por el PRIMER CARACTER del string, asi que un valor
+			     como "AxisTargetBatch" seria indistinguible de "AxisTarget"
+			     y haria que el programa base tratase el lote como un punto
+			     suelto.  Por eso el discriminador es un elemento propio. -->
+			<ELEMENT Tag="Command/BatchSeq" Type="INT"/>
+			<ELEMENT Tag="Command/BatchCount" Type="INT"/>
+
+			<!-- Abort: ROS lo levanta para detener el lote en curso. -->
+			<ELEMENT Tag="Command/AbortBatch" Type="BOOL"/>
+
+			<!-- Velocidad PTP programada para TODO el lote (perfil por
+			     segmento ya existente, aplicado una vez por lote). -->
+			<ELEMENT Tag="Command/BatchPtpVelocityPct" Type="REAL"/>
+
+			<!-- Puntos del lote.  MISMO tag repetido N veces dentro del
+			     mismo <Command>: cada repeticion deposita una entrada en
+			     cada una de estas seis memorias, y el SPS las drena de golpe
+			     con EKI_GetRealArray (6 llamadas por lote, no 6*N).
+			     El manual documenta un maximo de 512 elementos por lectura
+			     de campo (KST Ethernet KRL 3.0, p. 110). -->
+			<ELEMENT Tag="Command/Batch/@A1" Type="REAL"/>
+			<ELEMENT Tag="Command/Batch/@A2" Type="REAL"/>
+			<ELEMENT Tag="Command/Batch/@A3" Type="REAL"/>
+			<ELEMENT Tag="Command/Batch/@A4" Type="REAL"/>
+			<ELEMENT Tag="Command/Batch/@A5" Type="REAL"/>
+			<ELEMENT Tag="Command/Batch/@A6" Type="REAL"/>
+
+			<!-- 0 = comando no-trayectoria; (0,100] = velocidad PTP articular
+			     programada por ENVIAR TRAYECTORIA. -->
+			<ELEMENT Tag="Command/TrajectoryPtpVelocityPct" Type="REAL"/>
+		</XML>
+	</RECEIVE>
+	<SEND>
+		<XML>
+			<ELEMENT Tag="Robot/Seq"/>
+			<ELEMENT Tag="Robot/Mode"/>
+			
+			<ELEMENT Tag="Robot/Data/AxisActual/@A1"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A2"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A3"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A4"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A5"/>
+			<ELEMENT Tag="Robot/Data/AxisActual/@A6"/>
+			
+			<ELEMENT Tag="Robot/Data/PositionActual/@X"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@Y"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@Z"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@A"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@B"/>
+			<ELEMENT Tag="Robot/Data/PositionActual/@C"/>
+			
+			<ELEMENT Tag="Robot/Status"/>
+			<ELEMENT Tag="Robot/MoveReady"/>
+			<ELEMENT Tag="Robot/LimitsOK"/>
+			<ELEMENT Tag="Robot/DeltaOK"/>
+			<ELEMENT Tag="Robot/MoveExecuted"/>
+
+			<!-- Explicit RX acknowledgement: number of COMPLETE commands the
+			     SPS has consumed since the channel opened.  Lets the Ubuntu
+			     bridge know the KUKA is draining, instead of guessing from
+			     cycle timing. -->
+			<ELEMENT Tag="Robot/RxCounter"/>
+
+			<!-- ===== MODO LOTE - realimentacion hacia ROS =====
+			     Viaja en el MISMO bloque periodico que ya manda RxCounter,
+			     sin canal ni conexion nuevos. -->
+			<ELEMENT Tag="Robot/BatchSeq"/>
+			<ELEMENT Tag="Robot/BatchConsumed"/>
+			<ELEMENT Tag="Robot/BatchActive"/>
+		</XML>
+	</SEND>
+</ETHERNETKRL>

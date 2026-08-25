@@ -1,0 +1,812 @@
+&ACCESS RV
+&REL 1
+&PARAM DISKPATH = KRC:\R1\Program
+&PARAM SensorITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF XmlDualMove_better( )
+
+; ============================================================================
+; XmlDualMove_better - robot-interpreter side of the ROS2 link, BATCH capable
+; ============================================================================
+; RELATIONSHIP WITH XmlDualMove.src
+;   XmlDualMove.src        baseline used for the KRL vs MoveIt2 comparative
+;                          study.  Untouched.  Still selectable and still
+;                          works against XmlDualMove_better.xml, because that
+;                          channel config is a strict superset.
+;   XmlDualMove_better.src this file: everything the baseline does, PLUS the
+;                          batch mode.  Only ONE of the two is selected at a
+;                          time; they never run together.
+;
+; WHAT BATCH MODE CHANGES
+;   The baseline executes one point per network round trip: ROS sends a point,
+;   waits for the robot to arrive, then sends the next.  Over 100+ trajectory
+;   points that dead time is what produces the advance-brake-advance pattern.
+;
+;   In batch mode ROS ships a block of up to XD_BATCH_MAX points, the SPS drops
+;   the whole block into the mailbox in one go, and this program walks it
+;   locally with no network in the inner loop.
+;
+;   Every point is STILL an exact-stop PTP.  No C_PTP, no blending, no SLIN,
+;   no Cartesian.  The motion type is identical; only the waiting changes.
+;
+; ADVANCE RUN
+;   KRL executes assignments during the advance run, and $ADVANCE defaults to
+;   3.  Left alone, XD_BATCH_CONSUMED_COUNT would run up to 3 points ahead of
+;   the real motion and the abort check would read stale state.  The batch loop
+;   therefore sets $ADVANCE = 0 for its duration and restores it on exit.  This
+;   costs nothing here: every point is already an exact stop.
+;
+;   The WAIT SEC 0.1 of the main loop is NOT touched: same place, same value.
+;   It simply does not sit between the points of one batch.
+; ============================================================================
+; THIS PROGRAM CONTAINS NO EthernetKRL CALLS.
+;
+; SPS.SUB owns the EKI channel: it opens it, drains the receive buffer on
+; every cycle and publishes the last valid command into the XD_ mailbox in
+; $CONFIG.DAT.  This program only reads that mailbox.  Consequences:
+;
+;   * Telemetry no longer depends on this program running.  DEMO26 or any
+;     other KRL program can be selected and Ubuntu keeps receiving data.
+;   * The receive buffer is never blocked by the robot interpreter, which is
+;     what used to fill the EKI memory and raise EKI01280.
+;   * The manual warns against reading one channel from both interpreters
+;     (EKI_Get empties the memory), so all reading stays in the SPS.
+;
+; SAFETY MODEL
+;   * On start-up the current mailbox Seq is taken as a BASELINE and is never
+;     executed.  A command that arrived while DEMO26 was running can never
+;     move the robot just because this program was selected afterwards.
+;   * A Seq is marked handled BEFORE acting on it, so a given Seq can move
+;     the robot or drive the gripper at most once.  The Ubuntu heartbeat
+;     deliberately repeats the same Seq and is therefore inert.
+;   * Gripper and motion are independent: EnableMove=FALSE with
+;     GripperCommand 0 or 1 performs a gripper-only action.
+;
+; ORDER OF EXECUTION for a new Seq:  validate -> gripper -> motion.
+; ============================================================================
+
+;FOLD Declaration
+  INT i
+  INT cmdSeq
+  INT cmdSeqCheck
+  INT handledSeq
+  INT gripperCmd
+
+  DECL AXIS axisTarget
+  DECL E6POS cartesianTarget
+
+  BOOL snapshotOK
+  BOOL isAxisMode
+  BOOL isCartesianMode
+
+  BOOL enableMove
+  BOOL limitsOK
+  BOOL readyToMove
+  BOOL moveExecuted
+  BOOL deltaOK
+  BOOL velocityOK
+  BOOL hasTrajectoryVelocity
+
+  REAL targetA1
+  REAL targetA2
+  REAL targetA3
+  REAL targetA4
+  REAL targetA5
+  REAL targetA6
+
+  REAL targetX
+  REAL targetY
+  REAL targetZ
+  REAL targetA
+  REAL targetB
+  REAL targetC
+  REAL ptpVelocityPct
+
+  REAL errorA1
+  REAL errorA2
+  REAL errorA3
+  REAL errorA4
+  REAL errorA5
+  REAL errorA6
+
+  REAL errorX
+  REAL errorY
+  REAL errorZ
+  REAL errorA
+  REAL errorB
+  REAL errorC
+
+  REAL MAX_DELTA_JOINT
+  REAL MAX_DELTA_POS
+  REAL MAX_DELTA_ORI
+
+  ; ---- BATCH MODE ----
+  INT batchSeq
+  INT batchSeqCheck
+  INT handledBatchSeq
+  INT batchCount
+  INT batchI
+  INT savedAdvance
+  REAL batchVelPct
+  REAL batchErr
+  BOOL batchSnapshotOK
+  BOOL batchRunning
+  BOOL batchPointOK
+  BOOL hasBatchVelocity
+  BOOL batchLoaded
+  BOOL batchGateOK
+  INT localBatchSeq
+  INT localBatchCount
+  REAL localBatchVelPct
+  DECL AXIS batchTarget
+
+  ; LOCAL copy of the batch.  The mailbox holds ONE batch slot, so executing
+  ; straight out of it would mean ROS could not load the next batch until the
+  ; current one finished - the very network gap batch mode exists to remove.
+  ; Copying to locals frees the mailbox the moment execution starts, so ROS
+  ; can refill it while the robot is still moving.
+  REAL localA1[20]
+  REAL localA2[20]
+  REAL localA3[20]
+  REAL localA4[20]
+  REAL localA5[20]
+  REAL localA6[20]
+;ENDFOLD (Declaration)
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+
+  ;FOLD USER INI
+    ;Reads targets from the XD_ mailbox published by SPS.SUB.
+    ;Supports BOTH Axis (A1-A6) and Cartesian (X,Y,Z,A,B,C) modes.
+    ;Movement must be enabled by the responsible operator via the bridge.
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+;FOLD Initialize data
+  cmdSeq = 0
+  cmdSeqCheck = 0
+  gripperCmd = -1
+
+  snapshotOK = FALSE
+  enableMove = FALSE
+  limitsOK = FALSE
+  readyToMove = FALSE
+  moveExecuted = FALSE
+  deltaOK = FALSE
+  velocityOK = FALSE
+  hasTrajectoryVelocity = FALSE
+  isAxisMode = FALSE
+  isCartesianMode = FALSE
+
+  targetA1 = $AXIS_ACT.A1
+  targetA2 = $AXIS_ACT.A2
+  targetA3 = $AXIS_ACT.A3
+  targetA4 = $AXIS_ACT.A4
+  targetA5 = $AXIS_ACT.A5
+  targetA6 = $AXIS_ACT.A6
+
+  targetX = $POS_ACT.X
+  targetY = $POS_ACT.Y
+  targetZ = $POS_ACT.Z
+  targetA = $POS_ACT.A
+  targetB = $POS_ACT.B
+  targetC = $POS_ACT.C
+  ptpVelocityPct = 0.0
+
+  errorA1 = 0.0
+  errorA2 = 0.0
+  errorA3 = 0.0
+  errorA4 = 0.0
+  errorA5 = 0.0
+  errorA6 = 0.0
+
+  errorX = 0.0
+  errorY = 0.0
+  errorZ = 0.0
+  errorA = 0.0
+  errorB = 0.0
+  errorC = 0.0
+
+  MAX_DELTA_JOINT = 10.0
+  MAX_DELTA_POS = 100.0  ; 100 mm jump max in X, Y, Z
+  MAX_DELTA_ORI = 20.0   ; 20 degrees jump max in A, B, C
+
+  axisTarget = $AXIS_ACT
+  cartesianTarget = $POS_ACT
+
+  ; ---- BASELINE ----
+  ; Whatever is sitting in the mailbox right now belongs to the past: it may
+  ; have arrived while DEMO26 was running, or be the last command of an
+  ; earlier ROS2 session.  Treating it as already handled is what stops this
+  ; program from moving the moment it is selected.
+  handledSeq = XD_CMD_SEQ
+
+  ; Same baseline rule for the batch: whatever batch is sitting in the mailbox
+  ; when this program is selected belongs to the past and is never executed.
+  handledBatchSeq = XD_BATCH_SEQ
+
+  batchSeq = 0
+  batchSeqCheck = 0
+  batchCount = 0
+  batchI = 0
+  savedAdvance = 3
+  batchVelPct = 0.0
+  batchErr = 0.0
+  batchSnapshotOK = FALSE
+  batchRunning = FALSE
+  batchPointOK = FALSE
+  hasBatchVelocity = FALSE
+  batchLoaded = FALSE
+  batchGateOK = FALSE
+  localBatchSeq = 0
+  localBatchCount = 0
+  localBatchVelPct = 0.0
+  batchTarget = $AXIS_ACT
+
+  XD_BATCH_ACTIVE = FALSE
+  XD_BATCH_CONSUMED_COUNT = 0
+
+  XD_MOVE_READY = FALSE
+  XD_LIMITS_OK = FALSE
+  XD_DELTA_OK = FALSE
+;ENDFOLD (Initialize data)
+
+;FOLD Configure motion parameters
+  $BWDSTART = FALSE
+
+  ; Default TOOL and BASE (modify if your setup requires specific ones)
+  $TOOL = $NULLFRAME
+  $BASE = $NULLFRAME
+;ENDFOLD (Configure motion parameters)
+
+;FOLD Move command loop
+LOOP
+
+  ;FOLD Snapshot the mailbox
+    ; Seqlock read: XD_CMD_SEQ is written LAST by the SPS, so reading it
+    ; before and after the payload detects a publish that landed mid-copy.
+    ; A torn snapshot is simply discarded and retried next cycle.
+    snapshotOK = FALSE
+
+    IF XD_CMD_UPDATING == FALSE THEN
+      cmdSeqCheck = XD_CMD_SEQ
+
+      targetA1 = XD_TARGET_A1
+      targetA2 = XD_TARGET_A2
+      targetA3 = XD_TARGET_A3
+      targetA4 = XD_TARGET_A4
+      targetA5 = XD_TARGET_A5
+      targetA6 = XD_TARGET_A6
+
+      targetX = XD_TARGET_X
+      targetY = XD_TARGET_Y
+      targetZ = XD_TARGET_Z
+      targetA = XD_TARGET_A
+      targetB = XD_TARGET_B
+      targetC = XD_TARGET_C
+
+      enableMove = XD_ENABLE_MOVE
+      gripperCmd = XD_GRIPPER_COMMAND
+      ptpVelocityPct = XD_TRAJ_PTP_VEL_PCT
+      isAxisMode = XD_AXIS_MODE
+      isCartesianMode = XD_CART_MODE
+
+      IF (XD_CMD_UPDATING == FALSE) AND (XD_CMD_SEQ == cmdSeqCheck) THEN
+        cmdSeq = cmdSeqCheck
+        snapshotOK = TRUE
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Snapshot the mailbox)
+
+  ;FOLD Snapshot the batch mailbox
+    ; Same seqlock idea as the single-point snapshot: XD_BATCH_SEQ is written
+    ; LAST by the SPS, so reading it before and after the payload detects a
+    ; publish that landed mid-copy.  A torn batch is discarded and retried.
+    batchSnapshotOK = FALSE
+
+    IF XD_CMD_UPDATING == FALSE THEN
+      batchSeqCheck = XD_BATCH_SEQ
+      batchCount = XD_BATCH_COUNT
+      batchVelPct = XD_BATCH_PTP_VEL_PCT
+
+      IF (XD_CMD_UPDATING == FALSE) AND (XD_BATCH_SEQ == batchSeqCheck) THEN
+        batchSeq = batchSeqCheck
+        batchSnapshotOK = TRUE
+      ENDIF
+    ENDIF
+
+    ; A batch mailbox reset follows the same rule as the single-point one.
+    IF batchSnapshotOK == TRUE THEN
+      IF batchSeq == 0 THEN
+        handledBatchSeq = 0
+      ENDIF
+    ENDIF
+
+    ; Velocity validation, identical rule to the single-point path.
+    hasBatchVelocity = FALSE
+    IF (batchVelPct > 0.0) AND (batchVelPct <= 100.0) THEN
+      hasBatchVelocity = TRUE
+    ENDIF
+  ;ENDFOLD (Snapshot the batch mailbox)
+
+  ;FOLD Follow a mailbox reset
+    ; XD_CMD_SEQ == 0 is the sentinel the SPS writes when it (re)opens the
+    ; channel: the mailbox holds no command at all.  There is nothing from
+    ; the past to protect against, so the handled marker follows it down.
+    ; Without this, a fresh ROS2 session that restarts its counter at 1 could
+    ; have its very first command silently ignored.
+    IF snapshotOK == TRUE THEN
+      IF cmdSeq == 0 THEN
+        handledSeq = 0
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Follow a mailbox reset)
+
+  ;FOLD Calculate error target - actual
+    IF isAxisMode THEN
+      errorA1 = targetA1 - $AXIS_ACT.A1
+      errorA2 = targetA2 - $AXIS_ACT.A2
+      errorA3 = targetA3 - $AXIS_ACT.A3
+      errorA4 = targetA4 - $AXIS_ACT.A4
+      errorA5 = targetA5 - $AXIS_ACT.A5
+      errorA6 = targetA6 - $AXIS_ACT.A6
+    ENDIF
+
+    IF isCartesianMode THEN
+      errorX = targetX - $POS_ACT.X
+      errorY = targetY - $POS_ACT.Y
+      errorZ = targetZ - $POS_ACT.Z
+      errorA = targetA - $POS_ACT.A
+      errorB = targetB - $POS_ACT.B
+      errorC = targetC - $POS_ACT.C
+    ENDIF
+  ;ENDFOLD (Calculate error target - actual)
+
+  ;FOLD Validate limits
+    limitsOK = TRUE
+
+    IF isAxisMode THEN
+      IF targetA1 < -160.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA1 > 160.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA2 < -180.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA2 > 35.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA3 < -110.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA3 > 146.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA4 < -175.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA4 > 175.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA5 < -110.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA5 > 110.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA6 < -340.0 THEN
+        limitsOK = FALSE
+      ENDIF
+      IF targetA6 > 340.0 THEN
+        limitsOK = FALSE
+      ENDIF
+    ENDIF
+
+    ; Note: Cartesian limits are harder to define safely without a known workspace.
+    ; Native KUKA reachability will prevent unsafe poses, but you can add boundary boxes here if needed.
+  ;ENDFOLD (Validate limits)
+
+  XD_LIMITS_OK = limitsOK
+
+  ;FOLD Validate delta (max jump per command)
+    deltaOK = TRUE
+
+    IF isAxisMode THEN
+      IF (errorA1 > MAX_DELTA_JOINT) OR (errorA1 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA2 > MAX_DELTA_JOINT) OR (errorA2 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA3 > MAX_DELTA_JOINT) OR (errorA3 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA4 > MAX_DELTA_JOINT) OR (errorA4 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA5 > MAX_DELTA_JOINT) OR (errorA5 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA6 > MAX_DELTA_JOINT) OR (errorA6 < -MAX_DELTA_JOINT) THEN
+        deltaOK = FALSE
+      ENDIF
+    ENDIF
+
+    IF isCartesianMode THEN
+      IF (errorX > MAX_DELTA_POS) OR (errorX < -MAX_DELTA_POS) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorY > MAX_DELTA_POS) OR (errorY < -MAX_DELTA_POS) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorZ > MAX_DELTA_POS) OR (errorZ < -MAX_DELTA_POS) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorA > MAX_DELTA_ORI) OR (errorA < -MAX_DELTA_ORI) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorB > MAX_DELTA_ORI) OR (errorB < -MAX_DELTA_ORI) THEN
+        deltaOK = FALSE
+      ENDIF
+      IF (errorC > MAX_DELTA_ORI) OR (errorC < -MAX_DELTA_ORI) THEN
+        deltaOK = FALSE
+      ENDIF
+    ENDIF
+  ;ENDFOLD (Validate delta)
+
+  XD_DELTA_OK = deltaOK
+
+  ;FOLD Validate trajectory PTP velocity
+    ; 0.0 identifies SEND manual/legacy and leaves the current programmed PTP
+    ; velocity untouched. Positive values belong only to AxisTarget trajectory
+    ; commands. Invalid mailbox values block motion.
+    velocityOK = FALSE
+    hasTrajectoryVelocity = FALSE
+
+    IF ptpVelocityPct == 0.0 THEN
+      velocityOK = TRUE
+    ENDIF
+    IF (ptpVelocityPct > 0.0) AND (ptpVelocityPct <= 100.0) THEN
+      velocityOK = TRUE
+      hasTrajectoryVelocity = TRUE
+    ENDIF
+    IF isCartesianMode AND hasTrajectoryVelocity THEN
+      velocityOK = FALSE
+    ENDIF
+  ;ENDFOLD (Validate trajectory PTP velocity)
+
+  ;FOLD Build target from mailbox
+    IF isAxisMode THEN
+      axisTarget = $AXIS_ACT
+      axisTarget.A1 = targetA1
+      axisTarget.A2 = targetA2
+      axisTarget.A3 = targetA3
+      axisTarget.A4 = targetA4
+      axisTarget.A5 = targetA5
+      axisTarget.A6 = targetA6
+    ENDIF
+
+    IF isCartesianMode THEN
+      cartesianTarget = $POS_ACT
+      cartesianTarget.X = targetX
+      cartesianTarget.Y = targetY
+      cartesianTarget.Z = targetZ
+      cartesianTarget.A = targetA
+      cartesianTarget.B = targetB
+      cartesianTarget.C = targetC
+    ENDIF
+  ;ENDFOLD (Build target from mailbox)
+
+  ;FOLD Determine readyToMove
+    readyToMove = FALSE
+
+    IF enableMove == TRUE THEN
+      IF limitsOK == TRUE THEN
+        IF deltaOK == TRUE THEN
+          IF velocityOK == TRUE THEN
+            IF snapshotOK == TRUE THEN
+              readyToMove = TRUE
+            ENDIF
+          ENDIF
+        ENDIF
+      ENDIF
+    ENDIF
+
+    IF XD_EKI_ACTIVE == FALSE THEN
+      readyToMove = FALSE
+    ENDIF
+    IF (isAxisMode == FALSE) AND (isCartesianMode == FALSE) THEN
+      readyToMove = FALSE
+    ENDIF
+
+    XD_MOVE_READY = readyToMove
+  ;ENDFOLD (Determine readyToMove)
+
+  ;FOLD Act on a NEW sequence only
+    ; A Seq is acted on exactly once.  handledSeq is advanced BEFORE the
+    ; action, so nothing can replay it: not the heartbeat, not a restart.
+    ;
+    ; BATCH GUARD: a batch packet also carries Command/Seq, so without this
+    ; guard the single-point block would fire on the batch packet and drive
+    ; the robot to XD_TARGET_A1..A6 before the batch even starts.  While a
+    ; batch is pending or running, the single-point path stands down.
+    ; Ordinary single-point commands are unaffected: with no batch in the
+    ; mailbox, batchSeq equals handledBatchSeq and this guard is transparent.
+    IF (batchSeq == handledBatchSeq) AND (batchRunning == FALSE) THEN
+    IF snapshotOK == TRUE THEN
+      IF cmdSeq > 0 THEN
+        IF cmdSeq <> handledSeq THEN
+          IF XD_EKI_ACTIVE == TRUE THEN
+
+            handledSeq = cmdSeq
+
+            ;FOLD Gripper action
+              ; -1 = do nothing (the bridge default), 0 = open, 1 = close.
+              ; The SPS has already rejected any other value.
+              IF gripperCmd == 0 THEN
+                GRPg_SetStateAndCheck(1, 1, 0.2, 1)
+              ENDIF
+              IF gripperCmd == 1 THEN
+                GRPg_SetStateAndCheck(1, 2, 0.2, 1)
+              ENDIF
+            ;ENDFOLD (Gripper action)
+
+            ;FOLD Motion
+              IF readyToMove == TRUE THEN
+                IF isAxisMode THEN
+                  IF hasTrajectoryVelocity THEN
+                    BAS (#VEL_PTP,ptpVelocityPct)
+                  ENDIF
+                  PTP axisTarget
+                ENDIF
+
+                IF isCartesianMode THEN
+                  PTP cartesianTarget
+                ENDIF
+
+                moveExecuted = TRUE
+                XD_LAST_MOVE_SEQ = cmdSeq
+                XD_MOVE_EXECUTED = TRUE
+              ENDIF
+            ;ENDFOLD (Motion)
+
+          ENDIF
+        ENDIF
+      ENDIF
+    ENDIF
+    ENDIF
+  ;ENDFOLD (Act on a NEW sequence only)
+
+  ;FOLD Execute a NEW batch
+    ; A batch is acted on exactly once, same contract as a single Seq:
+    ; handledBatchSeq advances BEFORE the first point, so nothing can replay
+    ; it after a restart or a repeated packet.
+    ;
+    ; REFILL WHILE MOVING
+    ;   The mailbox has ONE batch slot.  Executing straight out of it would
+    ;   force ROS to wait for the batch to finish before loading the next,
+    ;   reintroducing one network gap per batch.  So the batch is copied into
+    ;   local arrays first: the mailbox is free again immediately and ROS can
+    ;   refill it while the robot is still moving through the local copy.
+    ;   The WHILE below then picks up that next batch with no gap at all.
+    ;
+    ;   If no new batch has arrived by the time the local copy runs out, the
+    ;   WHILE exits and the outer loop simply waits - same behaviour as the
+    ;   baseline when no command is present.
+    ; Entry gate for a new batch.  These five conditions were five nested
+    ; IFs.  KRL allows at most 10 nested control structures and that pushed
+    ; the batch loop to depth 12, so the controller rejected the file with
+    ; error 2218.  Same conditions, same order, same outcome - the only
+    ; thing that changed is the nesting depth.  Do NOT re-nest them.
+    batchGateOK = (batchSnapshotOK == TRUE) AND (batchSeq > 0)
+    batchGateOK = batchGateOK AND (batchSeq <> handledBatchSeq)
+    batchGateOK = batchGateOK AND (XD_EKI_ACTIVE == TRUE)
+    batchGateOK = batchGateOK AND (XD_ENABLE_MOVE == TRUE)
+    IF batchGateOK == TRUE THEN
+
+      ; A stale abort from a previous batch must not kill this one.
+      XD_ABORT_BATCH = FALSE
+      XD_BATCH_ACTIVE = TRUE
+      batchRunning = TRUE
+
+      ; Advance run OFF for the whole batch.  Without this,
+      ; XD_BATCH_CONSUMED_COUNT and the abort check below would run
+      ; up to $ADVANCE points ahead of the real motion.  Costs
+      ; nothing here: every point is already an exact stop.
+      savedAdvance = $ADVANCE
+      $ADVANCE = 0
+
+      WHILE batchRunning == TRUE
+
+        ;FOLD Copy the mailbox batch into the local arrays
+          ; Seqlock read, same idea as the single-point snapshot.
+          batchLoaded = FALSE
+
+          IF XD_CMD_UPDATING == FALSE THEN
+            batchSeqCheck = XD_BATCH_SEQ
+            localBatchCount = XD_BATCH_COUNT
+            localBatchVelPct = XD_BATCH_PTP_VEL_PCT
+
+            IF localBatchCount > 0 THEN
+              IF localBatchCount <= XD_BATCH_MAX THEN
+                FOR batchI = 1 TO localBatchCount
+                  localA1[batchI] = XD_BATCH_A1[batchI]
+                  localA2[batchI] = XD_BATCH_A2[batchI]
+                  localA3[batchI] = XD_BATCH_A3[batchI]
+                  localA4[batchI] = XD_BATCH_A4[batchI]
+                  localA5[batchI] = XD_BATCH_A5[batchI]
+                  localA6[batchI] = XD_BATCH_A6[batchI]
+                ENDFOR
+
+                IF (XD_CMD_UPDATING == FALSE) AND (XD_BATCH_SEQ == batchSeqCheck) THEN
+                  IF batchSeqCheck <> handledBatchSeq THEN
+                    localBatchSeq = batchSeqCheck
+                    batchLoaded = TRUE
+                  ENDIF
+                ENDIF
+              ENDIF
+            ENDIF
+          ENDIF
+
+          ; Nothing new in the mailbox: leave the batch loop and let
+          ; the outer loop wait.  The robot does not move.
+          IF batchLoaded == FALSE THEN
+            batchRunning = FALSE
+          ENDIF
+        ;ENDFOLD (Copy the mailbox batch)
+
+        IF batchRunning == TRUE THEN
+
+          ; Claimed BEFORE the first point: nothing can replay it.
+          handledBatchSeq = localBatchSeq
+          XD_BATCH_CONSUMED_COUNT = 0
+
+          hasBatchVelocity = FALSE
+          IF (localBatchVelPct > 0.0) AND (localBatchVelPct <= 100.0) THEN
+            hasBatchVelocity = TRUE
+          ENDIF
+          IF hasBatchVelocity THEN
+            BAS (#VEL_PTP,localBatchVelPct)
+          ENDIF
+
+          FOR batchI = 1 TO localBatchCount
+
+            ;FOLD Local gates - re-checked before EVERY point
+              ; All local: no network, so this adds no latency back.
+              IF XD_ABORT_BATCH == TRUE THEN
+                batchRunning = FALSE
+              ENDIF
+              IF XD_ENABLE_MOVE == FALSE THEN
+                batchRunning = FALSE
+              ENDIF
+              IF XD_EKI_ACTIVE == FALSE THEN
+                batchRunning = FALSE
+              ENDIF
+            ;ENDFOLD (Local gates)
+
+            IF batchRunning == TRUE THEN
+
+              ;FOLD Build this point from the LOCAL copy
+                batchTarget = $AXIS_ACT
+                batchTarget.A1 = localA1[batchI]
+                batchTarget.A2 = localA2[batchI]
+                batchTarget.A3 = localA3[batchI]
+                batchTarget.A4 = localA4[batchI]
+                batchTarget.A5 = localA5[batchI]
+                batchTarget.A6 = localA6[batchI]
+              ;ENDFOLD (Build this point)
+
+              ;FOLD Validate this point - same limits as the baseline
+                batchPointOK = TRUE
+
+                IF batchTarget.A1 < -160.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A1 > 160.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A2 < -180.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A2 > 35.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A3 < -110.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A3 > 146.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A4 < -175.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A4 > 175.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A5 < -110.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A5 > 110.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A6 < -340.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+                IF batchTarget.A6 > 340.0 THEN
+                  batchPointOK = FALSE
+                ENDIF
+              ;ENDFOLD (Validate this point)
+
+              ;FOLD Validate delta against the REAL position
+                ; $AXIS_ACT is current here because $ADVANCE = 0.
+                batchErr = batchTarget.A1 - $AXIS_ACT.A1
+                IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
+                  batchPointOK = FALSE
+                ENDIF
+                batchErr = batchTarget.A2 - $AXIS_ACT.A2
+                IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
+                  batchPointOK = FALSE
+                ENDIF
+                batchErr = batchTarget.A3 - $AXIS_ACT.A3
+                IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
+                  batchPointOK = FALSE
+                ENDIF
+                batchErr = batchTarget.A4 - $AXIS_ACT.A4
+                IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
+                  batchPointOK = FALSE
+                ENDIF
+                batchErr = batchTarget.A5 - $AXIS_ACT.A5
+                IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
+                  batchPointOK = FALSE
+                ENDIF
+                batchErr = batchTarget.A6 - $AXIS_ACT.A6
+                IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
+                  batchPointOK = FALSE
+                ENDIF
+              ;ENDFOLD (Validate delta)
+
+              ;FOLD Move
+                IF batchPointOK == TRUE THEN
+                  PTP batchTarget
+                  ; Reached for real: $ADVANCE = 0 guarantees this
+                  ; assignment runs after the motion, not before.
+                  XD_BATCH_CONSUMED_COUNT = batchI
+                  XD_LAST_MOVE_SEQ = localBatchSeq
+                  XD_MOVE_EXECUTED = TRUE
+                ELSE
+                  ; A point that fails its own validation stops the
+                  ; batch.  Skipping it silently would move the robot
+                  ; along a path nobody validated.
+                  batchRunning = FALSE
+                ENDIF
+              ;ENDFOLD (Move)
+
+            ENDIF
+          ENDFOR
+
+        ENDIF
+      ENDWHILE
+
+      ; Restore the advance run and release the batch.
+      $ADVANCE = savedAdvance
+      batchRunning = FALSE
+      XD_BATCH_ACTIVE = FALSE
+      XD_ABORT_BATCH = FALSE
+
+    ENDIF
+  ;ENDFOLD (Execute a NEW batch)
+
+  WAIT SEC 0.1
+
+ENDLOOP
+;ENDFOLD (Move command loop)
+
+; No EKI_Close here: the channel belongs to SPS.SUB and must survive this
+; program being deselected.  That is the whole point of the redesign.
+
+END

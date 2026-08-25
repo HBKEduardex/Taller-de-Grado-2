@@ -1,0 +1,131 @@
+# axis_move_better configuration for kuka_eki_bridge — BATCH MODE
+#
+# Copy of axis_move.yaml plus the batch parameters. axis_move.yaml is NOT
+# modified and keeps driving the baseline node.
+#
+# Requires on the controller:
+#   XmlDualMove_better.xml   (EKI channel, superset of XmlDualMove.xml)
+#   sps_submit_better.sub    (Submit interpreter, superset)
+#   config_submit_better.dat ($CONFIG, superset)
+#   XmlDualMove_better.src   (robot program, selected instead of the baseline)
+
+eki_axis_move:
+  ros__parameters:
+
+    # ── TCP server ─────────────────────────────────────────────────────
+    bind_host: "0.0.0.0"
+    port: 59153
+
+    receive_buffer_size: 8192
+
+    # ── ROS2 topics ────────────────────────────────────────────────────
+    target_topic: "/kuka/axis_move/target_json"
+    feedback_topic: "/kuka/axis_move/feedback_json"
+    raw_robot_xml_topic: "/kuka/axis_move/raw_robot_xml"
+    raw_command_xml_topic: "/kuka/axis_move/raw_command_xml"
+
+    # ── Logging ────────────────────────────────────────────────────────
+    log_feedback_values: true
+    log_raw_robot_xml: false
+    log_command_xml: true
+
+    # ── Safety ─────────────────────────────────────────────────────────
+    safe_mode: true
+    allow_motion_commands: true
+
+    default_enable_move: true
+
+    # ── Default target (home position) ─────────────────────────────────
+    default_target_deg:
+      A1: 0.0
+      A2: -90.0
+      A3: 90.0
+      A4: 0.0
+      A5: 0.0
+      A6: 0.0
+
+    # ── Soft limits [min_deg, max_deg] per joint ───────────────────────
+    soft_limits_deg:
+      A1: [-160.0, 160.0]
+      A2: [-180.0, 35.0]
+      A3: [-110.0, 146.0]
+      A4: [-175.0, 175.0]
+      A5: [-110.0, 110.0]
+      A6: [-340.0, 340.0]
+
+    # ── Max delta (max degrees per command) ────────────────────────────
+    max_delta_deg:
+      A1: 10.0
+      A2: 10.0
+      A3: 10.0
+      A4: 10.0
+      A5: 10.0
+      A6: 10.0
+
+    max_delta_pos_mm: 100.0
+    max_delta_ori_deg: 20.0
+
+    # ── Seq validation ─────────────────────────────────────────────────
+    require_seq_positive: true
+    reject_repeated_seq: true
+    command_timeout_sec: 2.0
+
+    # ── Command pacing ─────────────────────────────────────────────────
+    # Only answer a <Robot> frame with a <Command> when the GUI actually
+    # asked for something new (or when EnableMove would be 1). Otherwise
+    # repeat the last valid command at this period.
+    # Each suppressed reply saves the KUKA SPS one full 15 x EKI_Get read,
+    # which is what was capping telemetry at ~6 Hz.
+    # Set to 0.0 to restore the previous "reply to every frame" behaviour.
+    command_heartbeat_period_sec: 0.5
+
+    # ── EKI receive-buffer guard ───────────────────────────────────────
+    # EthernetKRL does NOT drop old elements when its receive memory fills:
+    # it CLOSES the TCP connection (KST Ethernet KRL 3.0, p. 97-98). The
+    # default limit is 16 elements and XmlDualMove.xml declares no <INTERNAL>
+    # block, so 16 is what applies. Several telemetry logs already end
+    # abruptly after exactly 16 rounds in which the SPS skipped its read.
+    #
+    # The KUKA now reports Robot/RxCounter — the SPS's own count of complete
+    # commands drained from the buffer — so the estimate is driven by an
+    # explicit acknowledgement, not by timing.
+    #
+    # consume_threshold_sec is only the FALLBACK, used until the first
+    # RxCounter arrives, so this bridge still works against a controller that
+    # has not been updated yet. It separates the two measured regimes: a round
+    # where the SPS skipped its read block (~91 ms) from one where it ran it
+    # (~168 ms).
+    consume_threshold_sec: 0.130
+
+    # Stop sending heartbeats at this estimated backlog...
+    max_pending_heartbeat: 4
+    # ...and stop sending anything at all here. Both far below 16.
+    # Set to a huge value to disable the guard.
+    max_pending_command: 10
+
+    # Guard state goes to its own NEW topic; feedback_json is untouched.
+    publish_bridge_diagnostics: true
+    bridge_diagnostics_topic: "/kuka/axis_move/bridge_diagnostics_json"
+
+    # ── BATCH MODE ─────────────────────────────────────────────────────
+    # Hard ceiling for anything arriving on the target topic. Must not
+    # exceed XD_BATCH_MAX in config_submit_better.dat, which is 20.
+    #
+    # Sizing rationale: XmlDualMove_better.xml declares
+    # <BUFFERING Limit="128">, and the EthernetKRL manual defines Limit as
+    # the maximum number of data elements ONE memory can hold (1...512,
+    # default 16 — KST Ethernet KRL 3.0, p. 26). With the array pattern a
+    # batch of N deposits N entries into each of the six Command/Batch/@Ax
+    # memories, so 20 leaves 6.4x headroom.
+    #
+    # Batch size does NOT drive the DETENER reaction time: that one is
+    # bounded by the advance run, and XmlDualMove_better.src sets
+    # $ADVANCE = 0 inside the batch loop so an abort takes effect after the
+    # point in flight, whatever the batch length.
+    max_batch_size: 20
+
+    # Refuse to put another batch on the wire while this many commands are
+    # still unread by the SPS. Tighter than max_pending_command because one
+    # batch packet, though a single command against RxCounter, drops N
+    # entries into each batch memory.
+    max_pending_batch: 2

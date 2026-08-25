@@ -818,6 +818,154 @@ SLIN, blending, streaming ni dependencia cartesiana a la trayectoria.
 
 ---
 
+---
+
+## 14. Modo LOTE (batch) — `ENVIAR TRAYECTORIA OPTIMIZADA`
+
+Segunda opción de ejecución, **completamente aditiva**. El modo base (§ 13) no
+cambia en ninguna capa: GUI, Python, XML, SPS y KRL siguen exactamente igual y
+`ENVIAR TRAYECTORIA` sigue siendo el comportamiento por defecto.
+
+### 14.1 Base y mejorado — qué archivo es cuál
+
+| Archivo | Papel |
+|---|---|
+| `XmlDualMove.src` | **Baseline del estudio comparativo KRL vs MoveIt2.** Sin tocar. |
+| `XmlDualMove_better.src` | **Mejora posterior**: todo lo del baseline **más** el modo lote. |
+| `XmlDualMove.xml` / `XmlDualMove_better.xml` | Canal EKI base / superconjunto. |
+| `sps_submit.sub` / `sps_submit_better.sub` | Submit base / superconjunto. |
+| `config_submit.dat` / `config_submit_better.dat` | `$CONFIG` base / superconjunto. |
+
+Los `_better` son **superconjuntos estrictos**: ningún tag ni variable del base
+fue renombrado, retipado ni eliminado. Con los `_better` cargados, el programa
+base `XmlDualMove.src` sigue funcionando igual, así que el baseline del estudio
+queda preservado y reproducible.
+
+> El SPS y el `$CONFIG` son **singletons** en el controlador: sólo puede haber
+> uno cargado. Por eso son superconjuntos y no alternativas. Los `.src` sí son
+> dos programas distintos y se selecciona uno u otro.
+
+### 14.2 Qué cambia y qué no
+
+El modo base manda **un punto por ida y vuelta de red**: envía, espera llegada,
+envía el siguiente. Sobre 100+ puntos ese tiempo muerto es lo que produce el
+patrón avanza-frena-avanza-frena.
+
+En modo lote ROS manda un bloque de hasta `trajectory_batch_max_size` puntos.
+`XmlDualMove_better.src` lo copia a arrays locales, libera el mailbox y los
+ejecuta uno tras otro **sin red entre ellos**. Mientras el robot se mueve, ROS
+recarga el mailbox con el siguiente sub-lote, así que tampoco hay hueco *entre*
+lotes.
+
+> **Cada punto sigue siendo un PTP de parada exacta.** No cambia el tipo de
+> movimiento: sólo desaparece la espera de red. `C_PTP` queda **deliberadamente
+> fuera** de esta implementación (§ 14.7).
+
+No cambian: la garra (sigue anclada a los puntos P1…Pn del usuario, nunca a los
+puntos internos del lote), la pausa manual (sigue siendo por **segmento
+completo**, sin importar en cuántos lotes se troceó), MoveIt2 (mismos puntos,
+mismo planner), el espacio articular exclusivo, ni ninguna protección.
+
+### 14.3 `WAIT SEC 0.1` — intacto a propósito
+
+El `WAIT SEC 0.1` del bucle principal de `XmlDualMove.src` **no se tocó en
+ningún archivo**: mismo sitio, mismo valor, también en
+`XmlDualMove_better.src`. Lo único que ocurre es que ya no se interpone entre
+los puntos de un mismo lote, porque esos se ejecutan dentro del bucle interno.
+
+### 14.4 Cómo viaja el lote
+
+Mismo tópico, mismo socket, mismo puerto, mismo canal EKI. Los campos de lote
+son **campos opcionales añadidos** al comando que ya existía; un mensaje sin
+ellos produce un `<Command>` idéntico al de hoy.
+
+```text
+GUI (TrajectoryBatchPanel)
+ -> TrajectoryBatchExecutor
+ -> RosAxisMoveBridge.publish_command()      (el bridge de siempre)
+ -> /kuka/axis_move/target_json              (el tópico de siempre)
+      batch_seq, batch_count, batch_points_deg[], batch_ptp_velocity_pct
+ -> eki_axis_move_better_node                (mismo nombre de nodo, puerto 59153)
+ -> <Command> ... <Batch A1=.. A6=../> x N
+ -> SPS: 6 x EKI_GetRealArray                (no 6 x N EKI_GetReal)
+ -> mailbox XD_BATCH_A1[]..A6[]
+ -> XmlDualMove_better.src: copia local -> PTP batchTarget x N
+```
+
+De vuelta, en la **misma trama periódica** que ya lleva `Robot/RxCounter`:
+`Robot/BatchSeq`, `Robot/BatchConsumed`, `Robot/BatchActive`.
+
+El discriminador de un paquete de lote es **`BatchCount > 0`**, nunca el string
+`Mode`: el SPS decide el modo por el **primer carácter** de `Command/Mode`
+(`sps_submit.sub:418`), así que `"AxisTargetBatch"` sería indistinguible de
+`"AxisTarget"` y el programa base trataría el lote como un punto suelto.
+
+### 14.5 Tamaño de lote y `Limit` de EKI
+
+`XmlDualMove_better.xml` sube `<BUFFERING Limit>` de 16 a **128**. El manual
+define `Limit` como *"número máximo de elementos de datos que **una memoria**
+puede alojar (1…512)"* (KST Ethernet KRL 3.0, p. 26). Con el patrón array, un
+lote de N deposita N entradas en cada una de las seis memorias
+`Command/Batch/@Ax`, así que `MAX_BATCH_SIZE = 20` deja **6,4× de holgura**. El
+techo documentado de `EKI_Get…Array()` es 512 elementos (p. 110).
+
+### 14.6 DETENER y tiempo de reacción
+
+`DETENER` (el botón que ya existía, no uno nuevo) levanta `XD_ABORT_BATCH`. El
+robot **termina el PTP en vuelo y no arranca el siguiente**; nunca se
+interrumpe un movimiento a mitad.
+
+> **El tiempo de reacción NO depende del tamaño de lote.** Lo acota el avance
+> (`$ADVANCE`, por defecto 3). En KRL las asignaciones se ejecutan durante el
+> avance, así que sin corregirlo el aborto reaccionaría hasta 3 puntos tarde y
+> `XD_BATCH_CONSUMED_COUNT` se adelantaría otro tanto. Por eso el bucle de lote
+> pone **`$ADVANCE = 0`** mientras dura y lo restaura al salir: el aborto surte
+> efecto tras **un solo punto**, sea el lote de 5 o de 20. No cuesta fluidez,
+> porque cada punto ya es parada exacta.
+
+### 14.7 `C_PTP` — fuera de alcance deliberadamente
+
+El buffer local haría técnicamente viable `C_PTP` (aproximación entre puntos)
+para eliminar también las paradas intermedias. **No se implementó**: cambia el
+perfil de movimiento y la trayectoria realmente recorrida, lo que invalidaría
+la comparación contra el baseline. Queda como recomendación para una fase
+posterior, con su propia validación.
+
+### 14.8 Requisitos y parámetros
+
+Para usar el botón nuevo hace falta, en el controlador: `XmlDualMove_better.xml`,
+`sps_submit_better.sub`, `config_submit_better.dat` y `XmlDualMove_better.src`
+seleccionado; y en Ubuntu, `eki_axis_move_better_node` en lugar del nodo base.
+Si el KUKA no publica `Robot/BatchSeq`, el preflight lo detecta y **se niega a
+mover**.
+
+| Parámetro | Defecto | Qué hace |
+|---|---|---|
+| `trajectory_batch_max_size` | 20 | Puntos por lote. ≤ `XD_BATCH_MAX`. |
+| `trajectory_batch_refill_threshold` | 0.5 | Reponer cuando queda menos de esta fracción. |
+| `trajectory_batch_stall_timeout_sec` | 20.0 | Sin progreso → abortar. |
+| `trajectory_batch_resend_period_sec` | 0.5 | Reenvío mientras el KUKA no acusa recibo. |
+| `max_batch_size` (bridge) | 20 | Tope duro en el nodo. |
+| `max_pending_batch` (bridge) | 2 | No poner otro lote si hay tantos comandos sin leer. |
+
+### 14.9 Protecciones — ninguna relajada
+
+`ENABLE MOVE`, `safe_mode`, `allow_motion_commands`, soft limits,
+`MAX_DELTA_JOINT`, `trajectory_max_delta_deg`, timeouts, feedback y `RxCounter`
+siguen exactamente igual. Además, específico del lote:
+
+- el **preflight valida el lote completo** —todos los puntos de todos los
+  lotes— antes de enviar el primero: límites, saltos ≤ 10° entre puntos
+  consecutivos y distancia del primero a la posición real;
+- el nodo bridge revalida cada punto contra los soft limits y descarta el lote
+  **entero** si algo falla: nunca un lote parcial;
+- `XmlDualMove_better.src` revalida límites y delta **de cada punto** contra
+  `$AXIS_ACT` antes de moverse, y para el lote si uno falla;
+- el estado de lote se destruye al caer el canal EKI, para que un lote a medio
+  entregar no sobreviva a una reconexión.
+
+---
+
 ## Licencia
 
 MIT

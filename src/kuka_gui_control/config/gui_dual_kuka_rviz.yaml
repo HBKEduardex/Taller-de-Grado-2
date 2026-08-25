@@ -84,6 +84,32 @@ kuka_gui_dual_node:
     trajectory_kuka_ptp_velocity_normal_pct: 30.0
     trajectory_kuka_ptp_velocity_reduced_pct: 5.0
 
+    # ── Modo LOTE (ENVIAR TRAYECTORIA OPTIMIZADA) ─────────────────────
+    # Sólo afecta al botón nuevo. ENVIAR TRAYECTORIA (punto a punto) no lo
+    # lee y sigue comportándose exactamente igual.
+    #
+    # Puntos por lote. Debe ser <= XD_BATCH_MAX de config_submit_better.dat
+    # y <= max_batch_size de axis_move_better.yaml (ambos 20).
+    # El tamaño NO determina el tiempo de reacción a DETENER: eso lo acota
+    # el avance, y XmlDualMove_better.src pone $ADVANCE = 0 dentro del bucle
+    # de lote, así que el aborto surte efecto tras el punto en curso sea cual
+    # sea la longitud del lote.
+    trajectory_batch_max_size: 20
+
+    # Reponer el siguiente sub-lote cuando quedan por consumir menos de esta
+    # fracción del lote en curso. XmlDualMove_better.src copia el lote a
+    # arrays locales al empezar, así que el mailbox queda libre y recargarlo
+    # mientras el robot se mueve no pisa el lote en ejecución.
+    trajectory_batch_refill_threshold: 0.5
+
+    # Sin progreso del contador de puntos consumidos durante este tiempo, se
+    # aborta la secuencia.
+    trajectory_batch_stall_timeout_sec: 20.0
+
+    # Reenvío del lote mientras el KUKA no acusa haberlo recibido. Por debajo
+    # del command_timeout_sec de 2.0 s del bridge.
+    trajectory_batch_resend_period_sec: 0.5
+
     # Salto máximo admitido entre puntos consecutivos (y desde la posición
     # real al primer punto). Es independiente del límite de SEND manual.
     trajectory_max_delta_deg: 10.0
