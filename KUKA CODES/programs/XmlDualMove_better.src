@@ -31,10 +31,16 @@ DEF XmlDualMove_better( )
 ;
 ; ADVANCE RUN
 ;   KRL executes assignments during the advance run, and $ADVANCE defaults to
-;   3.  Left alone, XD_BATCH_CONSUMED_COUNT would run up to 3 points ahead of
-;   the real motion and the abort check would read stale state.  The batch loop
-;   therefore sets $ADVANCE = 0 for its duration and restores it on exit.  This
-;   costs nothing here: every point is already an exact stop.
+;   3 (KSS 8.2 System Integrators, 7.5.3 "Advance run", p. 208: default 3,
+;   maximum 5).  Left alone, XD_BATCH_CONSUMED_COUNT would run up to $ADVANCE
+;   points ahead of the real motion and the abort check would read stale state.
+;
+;   This program does NOT write $ADVANCE.  It forces the advance-run stop once
+;   per point with WAIT SEC 0 instead, which is the documented way to make an
+;   instruction run in the main run, and which costs nothing here because every
+;   point is already an exact stop.  $ADVANCE = 0 would be legal (0 is inside
+;   the documented range) but it also makes approximate positioning impossible,
+;   and blending is where this design is headed next.
 ;
 ;   The WAIT SEC 0.1 of the main loop is NOT touched: same place, same value.
 ;   It simply does not sit between the points of one batch.
@@ -135,6 +141,7 @@ DEF XmlDualMove_better( )
   BOOL hasBatchVelocity
   BOOL batchLoaded
   BOOL batchGateOK
+  BOOL batchVelocityOK
   INT localBatchSeq
   INT localBatchCount
   REAL localBatchVelPct
@@ -241,6 +248,7 @@ DEF XmlDualMove_better( )
   hasBatchVelocity = FALSE
   batchLoaded = FALSE
   batchGateOK = FALSE
+  batchVelocityOK = FALSE
   localBatchSeq = 0
   localBatchCount = 0
   localBatchVelPct = 0.0
@@ -614,12 +622,13 @@ LOOP
       XD_BATCH_ACTIVE = TRUE
       batchRunning = TRUE
 
-      ; Advance run OFF for the whole batch.  Without this,
-      ; XD_BATCH_CONSUMED_COUNT and the abort check below would run
-      ; up to $ADVANCE points ahead of the real motion.  Costs
-      ; nothing here: every point is already an exact stop.
-      savedAdvance = $ADVANCE
-      $ADVANCE = 0
+      ; Every point inside the batch forces its own advance-run stop
+      ; with WAIT SEC 0 (see the FOR below).  $ADVANCE is deliberately
+      ; NOT written here.  It was once suspected of raising KSS01422;
+      ; that was never proven - the error kept firing after every write
+      ; to $ADVANCE had been removed - so that claim is withdrawn.
+      ; WAIT SEC 0 stays because it is the documented mechanism, not
+      ; because $ADVANCE is dangerous.
 
       WHILE batchRunning == TRUE
 
@@ -666,15 +675,43 @@ LOOP
           handledBatchSeq = localBatchSeq
           XD_BATCH_CONSUMED_COUNT = 0
 
+          ; Velocity gate, now the SAME rule as the single-point path.
+          ; The SPS publishes -1.0 into XD_BATCH_PTP_VEL_PCT whenever the
+          ; value on the wire fell outside (0, 100].  The single-point
+          ; path turns that into velocityOK = FALSE and refuses to move.
+          ; This path only used the value to decide whether to CALL BAS,
+          ; so a rejected velocity silently ran the whole batch at
+          ; whatever PTP velocity happened to be programmed.  Now:
+          ;   0.0        keep the currently programmed velocity
+          ;   (0, 100]   program it with BAS(#VEL_PTP, ...)
+          ;   anything else -> the batch stops before the first point.
+          ; Clearing batchRunning here is enough: every iteration of the
+          ; FOR below only moves inside IF batchRunning == TRUE.
+          batchVelocityOK = FALSE
           hasBatchVelocity = FALSE
+          IF localBatchVelPct == 0.0 THEN
+            batchVelocityOK = TRUE
+          ENDIF
           IF (localBatchVelPct > 0.0) AND (localBatchVelPct <= 100.0) THEN
+            batchVelocityOK = TRUE
             hasBatchVelocity = TRUE
+          ENDIF
+          IF batchVelocityOK == FALSE THEN
+            batchRunning = FALSE
           ENDIF
           IF hasBatchVelocity THEN
             BAS (#VEL_PTP,localBatchVelPct)
           ENDIF
 
           FOR batchI = 1 TO localBatchCount
+
+            ; Advance-run stop for THIS point.  Without it the gates,
+            ; the $AXIS_ACT delta check and XD_BATCH_CONSUMED_COUNT
+            ; would run up to DEF_ADVANCE points ahead of the real
+            ; motion.  WAIT SEC 0 is the documented way to force that
+            ; sync; it costs no time because every point is already an
+            ; exact stop.  $ADVANCE itself is never written.
+            WAIT SEC 0
 
             ;FOLD Local gates - re-checked before EVERY point
               ; All local: no network, so this adds no latency back.
@@ -743,7 +780,8 @@ LOOP
               ;ENDFOLD (Validate this point)
 
               ;FOLD Validate delta against the REAL position
-                ; $AXIS_ACT is current here because $ADVANCE = 0.
+                ; $AXIS_ACT is current here: the WAIT SEC 0 at the top
+                ; of this iteration stopped the advance run.
                 batchErr = batchTarget.A1 - $AXIS_ACT.A1
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
@@ -773,8 +811,9 @@ LOOP
               ;FOLD Move
                 IF batchPointOK == TRUE THEN
                   PTP batchTarget
-                  ; Reached for real: $ADVANCE = 0 guarantees this
-                  ; assignment runs after the motion, not before.
+                  WAIT SEC 0
+                  ; Reached for real: the WAIT SEC 0 above stops the
+                  ; advance run, so this runs after the motion.
                   XD_BATCH_CONSUMED_COUNT = batchI
                   XD_LAST_MOVE_SEQ = localBatchSeq
                   XD_MOVE_EXECUTED = TRUE
@@ -792,8 +831,7 @@ LOOP
         ENDIF
       ENDWHILE
 
-      ; Restore the advance run and release the batch.
-      $ADVANCE = savedAdvance
+      ; Release the batch.
       batchRunning = FALSE
       XD_BATCH_ACTIVE = FALSE
       XD_ABORT_BATCH = FALSE

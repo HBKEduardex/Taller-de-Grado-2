@@ -505,7 +505,7 @@ def build_axis_move_batch_command_xml(
                 return None
             values.append(value)
         rows.append(
-            '<Batch'
+            '<Pt'
             f' A1="{values[0]:.4f}"'
             f' A2="{values[1]:.4f}"'
             f' A3="{values[2]:.4f}"'

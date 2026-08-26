@@ -941,10 +941,30 @@ DECL BOOL XD_BATCH_ACTIVE = FALSE
 ; does not start the next one.  A PTP is never interrupted mid-motion.
 DECL BOOL XD_ABORT_BATCH = FALSE
 
-; Build signature of the Submit interpreter.  DIAGNOSTIC ONLY: nothing reads
-; it and no logic depends on it.  sps_submit_better.sub writes it once per
-; cycle, unconditionally.  If the variable display shows 0, the Submit that
-; is actually running in memory is NOT sps_submit_better.sub.
+; Batch diagnostic register.  DIAGNOSTIC ONLY: nothing reads it and no logic
+; depends on it.  The DECLARATION below is UNCHANGED, so this file does not
+; have to be re-uploaded when only the comment changes.
+;
+; sps_submit_better.sub writes it while it decodes a batch packet, as a
+; decimal number  S BB CC FF  (read it on the smartPad with
+; Display > Variable > Single, Name = XD_SPS_RUNNING_ID, Module = /R1/SPS):
+;
+;   S  = how far the SPS got with the batch
+;        3 = batch decoded, about to read the points
+;        4 = every point read AND the six axis memories came out empty
+;        5 = batch published into XD_BATCH_*   <- full success
+;        8 = a point read failed, or the six memories did not match
+;   BB = entries the Command/Pt/@A1 memory held before the points were read
+;   CC = BatchCount decoded from the packet
+;   FF = reserved, always 00
+;
+; 0 means the SPS never even reached the batch block - or that the Submit
+; actually running in memory is NOT sps_submit_better.sub.
+;
+; BB vs CC is the point of the register: send a batch of N points and the
+; two fields say whether the controller stored N entries for the repeated
+; <Pt/> element (BB = CC = N) or collapsed them into one (BB = 01, CC = N).
+; KST Ethernet KRL 3.0 does not document repeated elements either way.
 DECL INT XD_SPS_RUNNING_ID = 0
 
 ;ENDFOLD (USER GLOBALS)

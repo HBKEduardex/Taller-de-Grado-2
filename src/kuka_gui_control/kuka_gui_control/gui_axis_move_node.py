@@ -80,7 +80,13 @@ DEFAULT_CONFIG = {
     # ── Modo LOTE (capa AÑADIDA) ─────────────────────────────────────
     # Puntos por lote. Debe ser <= XD_BATCH_MAX de config_submit_better.dat
     # y <= max_batch_size de axis_move_better.yaml (ambos 20).
-    'trajectory_batch_max_size':            20,
+    #
+    # DIAGNOSTICO 2026-08-25: con 20 puntos el <Command> pesa ~2195 bytes y el
+    # canal EKI del KUKA muere al recibirlo (KSS01422, la telemetria se corta
+    # en seco). Un comando normal pesa 472 bytes y nunca falla. 5 puntos dejan
+    # el paquete en ~905 bytes. Subir este numero solo cuando se conozca el
+    # tamano maximo de telegrama que admite EthernetKRL en este controlador.
+    'trajectory_batch_max_size':            1,
     # Reponer el siguiente sub-lote cuando quedan por consumir menos de esta
     # fracción del lote en curso.
     'trajectory_batch_refill_threshold':    0.5,

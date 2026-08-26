@@ -22,7 +22,7 @@
 			<!-- Base file uses Limit="16" (the EthernetKRL default).  Batch
 			     mode needs more: with the array pattern a single <Command>
 			     carrying N <Batch/> elements deposits N entries into EACH of
-			     the six Command/Batch/@Ax memories, and the manual defines
+			     the six Command/Pt/@Ax memories, and the manual defines
 			     Limit as "numero maximo de elementos de datos que UNA memoria
 			     puede alojar (1...512)" (KST Ethernet KRL 3.0, p. 26).
 			     128 leaves 6.4x headroom over MAX_BATCH_SIZE = 20 while
@@ -84,12 +84,12 @@
 			     con EKI_GetRealArray (6 llamadas por lote, no 6*N).
 			     El manual documenta un maximo de 512 elementos por lectura
 			     de campo (KST Ethernet KRL 3.0, p. 110). -->
-			<ELEMENT Tag="Command/Batch/@A1" Type="REAL"/>
-			<ELEMENT Tag="Command/Batch/@A2" Type="REAL"/>
-			<ELEMENT Tag="Command/Batch/@A3" Type="REAL"/>
-			<ELEMENT Tag="Command/Batch/@A4" Type="REAL"/>
-			<ELEMENT Tag="Command/Batch/@A5" Type="REAL"/>
-			<ELEMENT Tag="Command/Batch/@A6" Type="REAL"/>
+			<ELEMENT Tag="Command/Pt/@A1" Type="REAL"/>
+			<ELEMENT Tag="Command/Pt/@A2" Type="REAL"/>
+			<ELEMENT Tag="Command/Pt/@A3" Type="REAL"/>
+			<ELEMENT Tag="Command/Pt/@A4" Type="REAL"/>
+			<ELEMENT Tag="Command/Pt/@A5" Type="REAL"/>
+			<ELEMENT Tag="Command/Pt/@A6" Type="REAL"/>
 
 			<!-- 0 = comando no-trayectoria; (0,100] = velocidad PTP articular
 			     programada por ENVIAR TRAYECTORIA. -->
