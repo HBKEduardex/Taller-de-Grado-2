@@ -941,5 +941,11 @@ DECL BOOL XD_BATCH_ACTIVE = FALSE
 ; does not start the next one.  A PTP is never interrupted mid-motion.
 DECL BOOL XD_ABORT_BATCH = FALSE
 
+; Build signature of the Submit interpreter.  DIAGNOSTIC ONLY: nothing reads
+; it and no logic depends on it.  sps_submit_better.sub writes it once per
+; cycle, unconditionally.  If the variable display shows 0, the Submit that
+; is actually running in memory is NOT sps_submit_better.sub.
+DECL INT XD_SPS_RUNNING_ID = 0
+
 ;ENDFOLD (USER GLOBALS)
 ENDDAT

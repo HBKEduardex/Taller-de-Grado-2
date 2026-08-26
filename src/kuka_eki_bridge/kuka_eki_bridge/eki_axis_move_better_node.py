@@ -119,6 +119,7 @@ from kuka_eki_bridge.axis_move_better_xml_utils import (
     build_axis_move_batch_command_xml,
     build_abort_batch_command_xml,
     format_axis_move_log,
+    parse_axis_move_xml as parse_axis_move_xml_better,
 )
 
 # ---------------------------------------------------------------------------
@@ -654,6 +655,21 @@ class EkiAxisMoveNode(Node):
         delta_ok = parsed.get('delta_ok', False)
         move_executed = parsed.get('move_executed', False)
         rx_counter = parsed.get('rx_counter')
+
+        # EkiAxisMoveServer is shared with the baseline node and parses with
+        # axis_move_xml_utils, which knows nothing about the batch tags: its
+        # result never carries batch_seq / batch_consumed / batch_active, so
+        # reading them here would always yield None even though the KUKA does
+        # send <BatchSeq>, <BatchConsumed> and <BatchActive>.
+        # Re-parsing the same frame with the batch-aware parser is what
+        # recovers them, and it touches neither the shared server nor the
+        # baseline parser. One extra parse per frame at ~2 Hz.
+        better_parsed = parse_axis_move_xml_better(raw_xml)
+        if better_parsed is not None:
+            parsed['batch_seq'] = better_parsed.get('batch_seq')
+            parsed['batch_consumed'] = better_parsed.get('batch_consumed')
+            parsed['batch_active'] = better_parsed.get('batch_active')
+
         batch_seq_fb = parsed.get('batch_seq')
         batch_consumed_fb = parsed.get('batch_consumed')
         batch_active_fb = parsed.get('batch_active')

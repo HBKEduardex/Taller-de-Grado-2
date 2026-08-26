@@ -178,6 +178,13 @@ DEF  SPS ( )
     ;FOLD USER PLC
     ;Make your modifications here
 
+    ; ---------- 0. SPS build signature (diagnostic only) ----------
+    ; Written unconditionally at the top of every Submit cycle: no EKI, no
+    ; connection, no motion, no batch, no EnableMove involved.  It updates
+    ; with the robot stopped.  If the variable display shows 0, the Submit
+    ; running in memory is NOT this file.
+    XD_SPS_RUNNING_ID = 20260825
+
     ; ==========================================================
     ; XmlDualMove - the Submit interpreter OWNS the EKI channel
     ; ==========================================================
@@ -820,6 +827,21 @@ DEF  SPS ( )
           ENDIF
         ENDIF
         ENDIF
+        ENDIF
+      ENDIF
+
+      ; ---- An RX fault must not silence telemetry ----
+      ; A read error is a PACKET problem, not a LINK problem: a malformed
+      ; value, an empty memory or a torn packet says nothing about the
+      ; socket.  Killing TX for the rest of the cycle would also drop
+      ; Robot/BatchSeq, which is exactly what ROS uses to detect that this
+      ; controller supports batch at all.
+      ; The link is only really down when EthernetKRL says so, so ask it:
+      ; EKI_CheckBuffer moves no data and still reports .Connected.
+      IF xd_channelOK == FALSE THEN
+        XD_RET = EKI_CheckBuffer("XmlDualMove_better", "Command/Seq")
+        IF XD_RET.Connected == TRUE THEN
+          xd_channelOK = TRUE
         ENDIF
       ENDIF
 
