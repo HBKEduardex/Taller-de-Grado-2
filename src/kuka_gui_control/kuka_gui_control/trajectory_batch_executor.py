@@ -159,6 +159,11 @@ class TrajectoryBatchExecutor(QObject):
         self._last_send_at = 0.0
         self._last_progress_at = 0.0
         self._last_consumed_total = 0
+        # XD_BATCH_CONSUMED_COUNT del KUKA es MONOTONO: cuenta puntos de lote
+        # ejecutados desde que se abrio el canal, sin reiniciarse por lote.
+        # Los puntos del segmento en curso son (crudo - linea base).
+        self._raw_consumed = 0
+        self._consumed_baseline = 0
 
         self._gripper_queue: List[str] = []
         self._gripper_started_at = 0.0
@@ -230,24 +235,34 @@ class TrajectoryBatchExecutor(QObject):
         self._robot_batch_active = active
 
         if isinstance(consumed, int):
+            self._raw_consumed = consumed
             total = self._consumed_total(consumed)
             if total > self._last_consumed_total:
                 self._last_consumed_total = total
                 self._last_progress_at = time.monotonic()
             self._robot_batch_consumed = consumed
 
-    def _consumed_total(self, consumed_in_batch: int) -> int:
+    def _consumed_total(self, consumed_raw: int) -> int:
         """
-        Puntos consumidos del segmento en total.
+        Puntos del segmento en curso realmente ejecutados por el KUKA.
 
-        XD_BATCH_CONSUMED_COUNT se reinicia en cada lote, así que hay que
-        sumarle los puntos de los lotes ya terminados.
+        XD_BATCH_CONSUMED_COUNT es un total monótono desde la apertura del
+        canal, así que basta restar la línea base tomada al empezar el
+        segmento.
+
+        La versión anterior reconstruía el total como "puntos de los lotes
+        anteriores + los de éste", usando `_batch_cursor` — que cuenta lotes
+        ENVIADOS, no terminados. En cuanto el ejecutor precargaba el lote
+        siguiente (que es justo lo que hace el modo lote), el total saltaba
+        un lote entero por delante de la realidad, `_last_consumed_total` lo
+        congelaba por ser monótono, y el segmento se daba por terminado antes
+        de ejecutar el último lote: el robot no llegaba nunca al punto final.
         """
-        finished_before = 0
-        for index in range(self._batch_cursor - 1):
-            if index < len(self._batches):
-                finished_before += len(self._batches[index])
-        return finished_before + max(0, int(consumed_in_batch))
+        if consumed_raw < self._consumed_baseline:
+            # El contador del KUKA volvió atrás: reselección de programa o
+            # reapertura del canal. Re-anclar en vez de devolver negativos.
+            self._consumed_baseline = consumed_raw
+        return consumed_raw - self._consumed_baseline
 
     # ── Preflight ────────────────────────────────────────────────────
 
@@ -467,6 +482,8 @@ class TrajectoryBatchExecutor(QObject):
         self._sent_points = 0
         self._segment_points = sum(len(b) for b in batches)
         self._segment_velocity = velocity
+        # Línea base del contador monótono del KUKA para ESTE segmento.
+        self._consumed_baseline = self._raw_consumed
         self._last_consumed_total = 0
         self._last_sent_batch_seq = 0
         self._last_progress_at = time.monotonic()

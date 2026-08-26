@@ -142,6 +142,18 @@ DEF XmlDualMove_better( )
   BOOL batchLoaded
   BOOL batchGateOK
   BOOL batchVelocityOK
+  ; Ultimo punto ENTREGADO al planificador.  La validacion de salto se hace
+  ; contra este valor y NO contra $AXIS_ACT: con aproximacion activa el robot
+  ; va por detras del interprete a proposito, asi que $AXIS_ACT no dice donde
+  ; estara cuando se ejecute el punto que se esta validando.  Ademas leer
+  ; $AXIS_ACT dentro del encadenado obligaria a una parada del avance, que es
+  ; justo lo que impide aproximar (KSS 8.2 SI, 8.5, p. 224).
+  REAL prevA1
+  REAL prevA2
+  REAL prevA3
+  REAL prevA4
+  REAL prevA5
+  REAL prevA6
   INT localBatchSeq
   INT localBatchCount
   REAL localBatchVelPct
@@ -249,6 +261,12 @@ DEF XmlDualMove_better( )
   batchLoaded = FALSE
   batchGateOK = FALSE
   batchVelocityOK = FALSE
+  prevA1 = 0.0
+  prevA2 = 0.0
+  prevA3 = 0.0
+  prevA4 = 0.0
+  prevA5 = 0.0
+  prevA6 = 0.0
   localBatchSeq = 0
   localBatchCount = 0
   localBatchVelPct = 0.0
@@ -630,6 +648,19 @@ LOOP
       ; WAIT SEC 0 stays because it is the documented mechanism, not
       ; because $ADVANCE is dangerous.
 
+      ; Ancla de la cadena de validacion.  Esta es la UNICA lectura de
+      ; $AXIS_ACT de todo el camino de movimiento, y esta antes del primer
+      ; PTP, donde una parada del avance no cuesta nada.  A partir de aqui
+      ; cada punto se valida contra el ANTERIOR, que es exactamente lo que
+      ; preflight() de ROS ya comprueba sobre el archivo entero.
+      WAIT SEC 0
+      prevA1 = $AXIS_ACT.A1
+      prevA2 = $AXIS_ACT.A2
+      prevA3 = $AXIS_ACT.A3
+      prevA4 = $AXIS_ACT.A4
+      prevA5 = $AXIS_ACT.A5
+      prevA6 = $AXIS_ACT.A6
+
       WHILE batchRunning == TRUE
 
         ;FOLD Copy the mailbox batch into the local arrays
@@ -673,7 +704,19 @@ LOOP
 
           ; Claimed BEFORE the first point: nothing can replay it.
           handledBatchSeq = localBatchSeq
-          XD_BATCH_CONSUMED_COUNT = 0
+
+          ; XD_BATCH_CONSUMED_COUNT is NOT reset here any more.  It used to
+          ; restart at 0 on every batch, which forced ROS to reconstruct the
+          ; segment total as "points of the finished batches + this one" -
+          ; and ROS has no way to know which batch is executing, only which
+          ; one it last SENT.  The moment it pre-loaded the next batch its
+          ; total jumped a whole batch ahead of reality, the segment was
+          ; declared finished before the last batch ran, and the robot never
+          ; reached the end point.
+          ; It is now a free-running total of batch points executed since the
+          ; channel opened.  ROS takes a baseline at the start of each segment
+          ; and subtracts.  A missed telemetry sample can no longer lose a
+          ; reset, because there are no resets left to miss.
 
           ; Velocity gate, now the SAME rule as the single-point path.
           ; The SPS publishes -1.0 into XD_BATCH_PTP_VEL_PCT whenever the
@@ -705,13 +748,18 @@ LOOP
 
           FOR batchI = 1 TO localBatchCount
 
-            ; Advance-run stop for THIS point.  Without it the gates,
-            ; the $AXIS_ACT delta check and XD_BATCH_CONSUMED_COUNT
-            ; would run up to DEF_ADVANCE points ahead of the real
-            ; motion.  WAIT SEC 0 is the documented way to force that
-            ; sync; it costs no time because every point is already an
-            ; exact stop.  $ADVANCE itself is never written.
-            WAIT SEC 0
+            ; NO hay parada del avance aqui.  La habia (WAIT SEC 0) y era
+            ; precisamente lo que impedia encadenar los puntos: KSS 8.2 SI,
+            ; 8.5, p. 224 - "Approximate positioning is not possible if the
+            ; motion instruction is followed by an instruction that triggers
+            ; an advance run stop".  Sin ella el interprete planifica por
+            ; delante y los PTP se solapan, que es todo el objetivo.
+            ;
+            ; Consecuencia asumida: estas puertas se evaluan en el AVANCE,
+            ; hasta $ADVANCE puntos por delante del movimiento real.  Un
+            ; abort no frena en el punto siguiente sino tras los bloques ya
+            ; planificados - que es como XD_ABORT_BATCH estuvo documentado
+            ; desde el principio ("termina el PTP en vuelo").
 
             ;FOLD Local gates - re-checked before EVERY point
               ; All local: no network, so this adds no latency back.
@@ -729,7 +777,10 @@ LOOP
             IF batchRunning == TRUE THEN
 
               ;FOLD Build this point from the LOCAL copy
-                batchTarget = $AXIS_ACT
+                ; batchTarget es DECL AXIS: A1..A6 y nada mas, y los seis se
+                ; asignan aqui.  El "batchTarget = $AXIS_ACT" que habia como
+                ; semilla era redundante y metia una lectura de la posicion
+                ; real en mitad del encadenado.
                 batchTarget.A1 = localA1[batchI]
                 batchTarget.A2 = localA2[batchI]
                 batchTarget.A3 = localA3[batchI]
@@ -779,30 +830,37 @@ LOOP
                 ENDIF
               ;ENDFOLD (Validate this point)
 
-              ;FOLD Validate delta against the REAL position
-                ; $AXIS_ACT is current here: the WAIT SEC 0 at the top
-                ; of this iteration stopped the advance run.
-                batchErr = batchTarget.A1 - $AXIS_ACT.A1
+              ;FOLD Validate delta against the PREVIOUS point
+                ; Mismo umbral MAX_DELTA_JOINT y misma consecuencia que
+                ; antes; lo que cambia es la referencia.  Con aproximacion
+                ; activa el robot va por detras del interprete a proposito,
+                ; asi que $AXIS_ACT no dice donde estara el robot cuando
+                ; ejecute ESTE punto - comparar contra el seria comparar
+                ; contra el pasado.  prevA1..A6 es el punto anterior de la
+                ; cadena, anclado en la posicion REAL antes del primer PTP.
+                ; Es la misma comprobacion que preflight() de ROS aplica al
+                ; archivo entero antes de enviar nada.
+                batchErr = batchTarget.A1 - prevA1
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
                 ENDIF
-                batchErr = batchTarget.A2 - $AXIS_ACT.A2
+                batchErr = batchTarget.A2 - prevA2
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
                 ENDIF
-                batchErr = batchTarget.A3 - $AXIS_ACT.A3
+                batchErr = batchTarget.A3 - prevA3
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
                 ENDIF
-                batchErr = batchTarget.A4 - $AXIS_ACT.A4
+                batchErr = batchTarget.A4 - prevA4
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
                 ENDIF
-                batchErr = batchTarget.A5 - $AXIS_ACT.A5
+                batchErr = batchTarget.A5 - prevA5
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
                 ENDIF
-                batchErr = batchTarget.A6 - $AXIS_ACT.A6
+                batchErr = batchTarget.A6 - prevA6
                 IF (batchErr > MAX_DELTA_JOINT) OR (batchErr < -MAX_DELTA_JOINT) THEN
                   batchPointOK = FALSE
                 ENDIF
@@ -810,13 +868,41 @@ LOOP
 
               ;FOLD Move
                 IF batchPointOK == TRUE THEN
-                  PTP batchTarget
-                  WAIT SEC 0
-                  ; Reached for real: the WAIT SEC 0 above stops the
-                  ; advance run, so this runs after the motion.
-                  XD_BATCH_CONSUMED_COUNT = batchI
+                  ; El TRIGGER actualiza el contador EN EL MOVIMIENTO
+                  ; PRINCIPAL, no en el avance: KSS 8.2 SI, 10.11.1,
+                  ; p. 333 - "The statement is executed parallel to the
+                  ; robot motion", y DISTANCE=1 lo dispara en el punto
+                  ; final (en mitad del arco si el punto se aproxima).
+                  ; Sin esto el contador correria hasta $ADVANCE puntos
+                  ; por delante del robot y ROS daria el segmento por
+                  ; terminado antes de tiempo.  La asignacion cumple la
+                  ; restriccion del manual: XD_BATCH_CONSUMED_COUNT es
+                  ; global de $CONFIG.DAT, no una variable de runtime.
+                  TRIGGER WHEN DISTANCE=1 DELAY=0 DO XD_BATCH_CONSUMED_COUNT = XD_BATCH_CONSUMED_COUNT + 1
+                  ; C_PTP = aproximacion PTP-PTP.  KSS 8.2 SI, 10.5.1,
+                  ; p. 297: "The specification C_PTP is sufficient for
+                  ; PTP-PTP approximate positioning".  La distancia de
+                  ; aproximacion sale de los valores por defecto que deja
+                  ; BAS(#INITMOV,0) al principio del programa; aqui no se
+                  ; escribe $APO para no meter otra escritura a una
+                  ; variable de sistema en el camino critico.
+                  ;
+                  ; En el ULTIMO punto de la secuencia no hay bloque de
+                  ; movimiento siguiente en el avance, asi que el
+                  ; controlador no puede aproximar y para exacto por si
+                  ; solo (KSS 8.2 SI, 8.5, p. 225).  Esa es la parada en
+                  ; el punto final del segmento, y sale gratis.
+                  PTP batchTarget C_PTP
                   XD_LAST_MOVE_SEQ = localBatchSeq
                   XD_MOVE_EXECUTED = TRUE
+                  ; La cadena avanza: el punto que se acaba de entregar
+                  ; pasa a ser la referencia del siguiente.
+                  prevA1 = batchTarget.A1
+                  prevA2 = batchTarget.A2
+                  prevA3 = batchTarget.A3
+                  prevA4 = batchTarget.A4
+                  prevA5 = batchTarget.A5
+                  prevA6 = batchTarget.A6
                 ELSE
                   ; A point that fails its own validation stops the
                   ; batch.  Skipping it silently would move the robot

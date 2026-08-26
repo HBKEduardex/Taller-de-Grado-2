@@ -211,6 +211,11 @@ class EkiAxisMoveNode(Node):
         # N entries into each of the six Command/Batch/@Ax memories. Refuse
         # to add another batch while this many commands are still unread.
         self.declare_parameter('max_pending_batch', 2)
+        # Ventana durante la que este nodo NO manda comandos de punto suelto
+        # despues de poner un lote en el cable. Cubre el retardo entre
+        # "lote enviado" y Robot/BatchActive=1 (telemetria ~200 ms, el .src
+        # mira el buzon cada 100 ms) y los huecos entre lotes consecutivos.
+        self.declare_parameter('batch_command_hold_sec', 2.0)
 
         # ── Read parameters ──────────────────────────────────────────
         self._host = self.get_parameter('bind_host').get_parameter_value().string_value
@@ -295,6 +300,11 @@ class EkiAxisMoveNode(Node):
         self._pending_batch_seq: int = 0
         self._pending_batch_velocity: float = 0.0
         self._batch_sent_seq: int = 0
+        self._last_batch_send_at: float = 0.0
+        self._last_batch_progress_at: float = 0.0
+        self._batch_hold_sec = float(
+            self.get_parameter('batch_command_hold_sec')
+            .get_parameter_value().double_value)
         self._abort_batch_request: bool = False
         # Mirror of the KUKA's own batch telemetry.
         self._robot_batch_seq = None
@@ -674,6 +684,16 @@ class EkiAxisMoveNode(Node):
         batch_consumed_fb = parsed.get('batch_consumed')
         batch_active_fb = parsed.get('batch_active')
 
+        # Progreso real del lote. Con aproximacion activa XD_BATCH_ACTIVE se
+        # pone a FALSE en el AVANCE, hasta $ADVANCE puntos antes de que el
+        # robot haya llegado, asi que por si solo no sirve para saber si el
+        # lote sigue en vuelo. El contador si: lo actualiza un TRIGGER en el
+        # movimiento principal. Mientras suba, el robot se esta moviendo.
+        if (isinstance(batch_consumed_fb, int)
+                and isinstance(self._robot_batch_consumed, int)
+                and batch_consumed_fb > self._robot_batch_consumed):
+            self._last_batch_progress_at = time.monotonic()
+
         self._robot_batch_seq = batch_seq_fb
         self._robot_batch_consumed = batch_consumed_fb
         self._robot_batch_active = batch_active_fb
@@ -790,6 +810,8 @@ class EkiAxisMoveNode(Node):
             self._pending_batch_seq = 0
             self._abort_batch_request = False
         self._batch_sent_seq = 0
+        self._last_batch_send_at = 0.0
+        self._last_batch_progress_at = 0.0
         self._robot_batch_seq = None
         self._robot_batch_consumed = None
         self._robot_batch_active = None
@@ -882,6 +904,20 @@ class EkiAxisMoveNode(Node):
             return self._build_batch_command(
                 cmd_seq, batch_seq_snap, batch_snap, batch_velocity_snap,
                 enable_move_snap, feedback_actual)
+
+        # ── BATCH: no single-point command may talk over a running batch ──
+        # XmlDualMove_better.src re-reads XD_ENABLE_MOVE before EVERY point of
+        # the batch, so ANY <Command> carrying EnableMove=0 aborts the batch
+        # mid-flight. And a heartbeat during a batch is GUARANTEED to carry
+        # EnableMove=0: layer 4 zeroes it because the seq is repeated, and
+        # layer 7 zeroes it because it compares a target frozen at the start
+        # of the batch against a robot that has since moved away from it.
+        # That is what stopped every batch after a handful of points.
+        # Nothing is lost by staying quiet: an abort and the next batch are
+        # both handled above, and the single-point path is stood down inside
+        # the robot program while a batch is pending anyway.
+        if self._batch_in_flight():
+            return None
 
         # Signature of what the GUI is asking for right now. Compared further
         # down to decide whether this <Robot> frame earns a <Command> reply.
@@ -1094,6 +1130,24 @@ class EkiAxisMoveNode(Node):
         self._last_command_send_time = time.monotonic()
         self._pending_commands += 1
 
+    def _batch_in_flight(self) -> bool:
+        """
+        True mientras el KUKA esta ejecutando un lote, o acaba de recibir uno.
+
+        Robot/BatchActive es la fuente principal; la ventana de gracia cubre
+        el tramo en el que el lote ya viaja pero el robot todavia no lo ha
+        marcado activo, y los huecos cortos entre lotes consecutivos.
+        """
+        if self._robot_batch_active is True:
+            return True
+        if self._batch_sent_seq > 0 and self._batch_hold_sec > 0.0:
+            # La ventana se renueva con cada punto que el robot consume, de
+            # modo que un lote largo no se queda sin cobertura a mitad.
+            last = max(self._last_batch_send_at, self._last_batch_progress_at)
+            if (time.monotonic() - last) < self._batch_hold_sec:
+                return True
+        return False
+
     def _build_batch_command(
         self,
         cmd_seq: int,
@@ -1143,6 +1197,15 @@ class EkiAxisMoveNode(Node):
 
         self._publish_command_xml(xml)
         self._batch_sent_seq = batch_seq
+        self._last_batch_send_at = time.monotonic()
+        # El objetivo de punto suelto se re-ancla en la posicion REAL del
+        # robot. El JSON de lote trae como axis_target el PRIMER punto del
+        # lote, que es relleno inerte; dejarlo ahi hacia que el primer
+        # heartbeat posterior al lote midiese un delta enorme contra un punto
+        # que el robot ya dejo atras.
+        with self._target_lock:
+            if len(feedback_actual) == len(_AXES):
+                self._last_valid_target = dict(feedback_actual)
         self.get_logger().info(
             f'[BATCH SEND] batch_seq={batch_seq} points={len(points)} '
             f'ptp_vel={velocity_pct:g}% enable={enable_move} '
