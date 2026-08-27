@@ -459,7 +459,7 @@ def build_axis_move_batch_command_xml(
     EKI_GetRealArray calls instead of 6 x N EKI_GetReal calls:
 
         <Command>
-          <Seq>412</Seq>
+          <Seq>0</Seq>                          <- SIEMPRE 0, ver abajo
           <Mode>AxisTarget</Mode>
           <EnableMove>1</EnableMove>
           <AxisTarget A1="..." ... />          <- inert hold target
@@ -482,6 +482,20 @@ def build_axis_move_batch_command_xml(
     point.  XmlDualMove_better.src stands the single-point path down while a
     batch is pending, and a current-position hold is inert for the baseline
     program too.
+
+    Command/Seq VA SIEMPRE A 0 en un paquete de lote, y el argumento `seq` se
+    ignora a proposito.  Un paquete de lote NO lleva ninguna orden de punto
+    suelto: su AxisTarget es relleno y su GripperCommand es -1.  Con un Seq
+    positivo, el bloque de punto suelto de XmlDualMove_better.src ve un Seq
+    que nadie ha atendido en cuanto termina el lote (batchSeq ==
+    handledBatchSeq y batchRunning == FALSE) y ejecuta ese relleno como un
+    PTP: el robot vuelve al punto donde EMPEZO el lote.  En los tramos cortos
+    (por debajo de MAX_DELTA_JOINT = 10 grados) la validacion de delta no lo
+    frena, y se ve como un rebote que ademas se come la orden de garra.
+    0 es el centinela DOCUMENTADO de "el buzon no lleva ninguna orden": el
+    interprete ignora todo Seq <= 0 y ademas hace handledSeq = 0, que es
+    justo lo que queremos.  El siguiente comando real (Seq > 0) se atiende
+    con normalidad.
 
     Returns:
         XML string, or None if the batch is malformed. Never a partial batch.
@@ -532,7 +546,8 @@ def build_axis_move_batch_command_xml(
 
     return (
         '<Command>'
-        f'<Seq>{int(seq)}</Seq>'
+        # 0 = "este paquete no trae orden de punto suelto". Ver el docstring.
+        '<Seq>0</Seq>'
         '<Mode>AxisTarget</Mode>'
         f'<EnableMove>{effective_enable}</EnableMove>'
         '<AxisTarget'

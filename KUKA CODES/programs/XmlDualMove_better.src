@@ -635,6 +635,26 @@ LOOP
     batchGateOK = batchGateOK AND (XD_ENABLE_MOVE == TRUE)
     IF batchGateOK == TRUE THEN
 
+      ; EL LOTE CONSUME TAMBIEN Command/Seq.
+      ; Un paquete de lote lleva ADEMAS Command/Seq y Command/AxisTarget.
+      ; Ese AxisTarget es relleno inerte: la posicion que tenia el robot
+      ; cuando ROS envio el lote.  Pero el bloque de punto suelto no sabe
+      ; que es relleno.  Al terminar el lote su puerta se reabre
+      ; (batchSeq == handledBatchSeq, batchRunning == FALSE), encuentra un
+      ; Seq que nadie ha atendido y lo ejecuta como un PTP normal: el robot
+      ; vuelve al punto donde EMPEZO el lote.
+      ; En los tramos largos la validacion de delta lo frena (recorridos de
+      ; 30-90 grados contra MAX_DELTA_JOINT = 10.0).  En los tramos cortos
+      ; de aproximacion y retirada NO: P3->P4 son 9.888 grados, y P4->P5
+      ; otros 9.710.  Medido: el robot bajaba, agarraba, subia, volvia a
+      ; bajar y a subir varias veces antes de seguir - un rebote por cada
+      ; tramo corto.
+      ; Atender el Seq aqui es correcto por definicion: el paquete YA se ha
+      ; consumido, por el camino de lote.  Nada se pierde, porque el
+      ; AxisTarget de un paquete de lote nunca fue un destino real y su
+      ; GripperCommand es siempre -1.
+      handledSeq = cmdSeq
+
       ; A stale abort from a previous batch must not kill this one.
       XD_ABORT_BATCH = FALSE
       XD_BATCH_ACTIVE = TRUE
