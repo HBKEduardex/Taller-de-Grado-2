@@ -868,17 +868,6 @@ LOOP
 
               ;FOLD Move
                 IF batchPointOK == TRUE THEN
-                  ; El TRIGGER actualiza el contador EN EL MOVIMIENTO
-                  ; PRINCIPAL, no en el avance: KSS 8.2 SI, 10.11.1,
-                  ; p. 333 - "The statement is executed parallel to the
-                  ; robot motion", y DISTANCE=1 lo dispara en el punto
-                  ; final (en mitad del arco si el punto se aproxima).
-                  ; Sin esto el contador correria hasta $ADVANCE puntos
-                  ; por delante del robot y ROS daria el segmento por
-                  ; terminado antes de tiempo.  La asignacion cumple la
-                  ; restriccion del manual: XD_BATCH_CONSUMED_COUNT es
-                  ; global de $CONFIG.DAT, no una variable de runtime.
-                  TRIGGER WHEN DISTANCE=1 DELAY=0 DO XD_BATCH_CONSUMED_COUNT = XD_BATCH_CONSUMED_COUNT + 1
                   ; C_PTP = aproximacion PTP-PTP.  KSS 8.2 SI, 10.5.1,
                   ; p. 297: "The specification C_PTP is sufficient for
                   ; PTP-PTP approximate positioning".  La distancia de
@@ -893,6 +882,23 @@ LOOP
                   ; solo (KSS 8.2 SI, 8.5, p. 225).  Esa es la parada en
                   ; el punto final del segmento, y sale gratis.
                   PTP batchTarget C_PTP
+                  ; Contador de progreso.  AQUI HABIA UN TRIGGER y era un
+                  ; error: "TRIGGER ... DO XD_BATCH_CONSUMED_COUNT =
+                  ; XD_BATCH_CONSUMED_COUNT + 1" es una lectura-modificacion-
+                  ; escritura de la MISMA global, y con el avance activo hay
+                  ; hasta $ADVANCE disparadores registrados a la vez que leen
+                  ; todos el mismo valor de partida.  Resultado medido: 20
+                  ; puntos ejecutados, el contador marcaba 4.  ROS no llegaba
+                  ; nunca al umbral de reposicion y no mandaba el lote 2.
+                  ;
+                  ; Ahora es una asignacion normal, que se ejecuta en el
+                  ; AVANCE: cuenta puntos PLANIFICADOS, no alcanzados, y va
+                  ; por delante del robot como mucho $ADVANCE puntos (maximo
+                  ; 5 segun KSS 8.2 SI, 7.5.3, p. 208).  Adelantarse es
+                  ; inofensivo para reponer lotes - de hecho conviene -, y la
+                  ; llegada REAL al punto final del segmento la comprueba ROS
+                  ; contra AxisActual, que no depende de este contador.
+                  XD_BATCH_CONSUMED_COUNT = XD_BATCH_CONSUMED_COUNT + 1
                   XD_LAST_MOVE_SEQ = localBatchSeq
                   XD_MOVE_EXECUTED = TRUE
                   ; La cadena avanza: el punto que se acaba de entregar

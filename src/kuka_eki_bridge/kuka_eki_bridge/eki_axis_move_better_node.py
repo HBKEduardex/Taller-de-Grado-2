@@ -216,6 +216,12 @@ class EkiAxisMoveNode(Node):
         # "lote enviado" y Robot/BatchActive=1 (telemetria ~200 ms, el .src
         # mira el buzon cada 100 ms) y los huecos entre lotes consecutivos.
         self.declare_parameter('batch_command_hold_sec', 2.0)
+        # Plazo MAXIMO para que el robot reclame un lote que ya viaja. No es
+        # un ajuste de rendimiento: es el tope que impide que este nodo se
+        # quede mudo para siempre si un lote es rechazado en el KUKA. Por
+        # encima del stall watchdog del ejecutor (20 s), para que sea SIEMPRE
+        # el ejecutor quien decida que un lote ha fracasado, no este reloj.
+        self.declare_parameter('batch_ack_timeout_sec', 30.0)
 
         # ── Read parameters ──────────────────────────────────────────
         self._host = self.get_parameter('bind_host').get_parameter_value().string_value
@@ -305,6 +311,14 @@ class EkiAxisMoveNode(Node):
         self._batch_hold_sec = float(
             self.get_parameter('batch_command_hold_sec')
             .get_parameter_value().double_value)
+        self._batch_ack_timeout = float(
+            self.get_parameter('batch_ack_timeout_sec')
+            .get_parameter_value().double_value)
+        # True cuando se ha visto que el interprete del robot RECLAMO el lote
+        # que este nodo mando por ultima vez (Robot/BatchActive=1 o el
+        # contador de puntos avanzando). Hasta entonces el lote esta en el
+        # buzon pero nadie lo ha cogido.
+        self._batch_ack_seen: bool = False
         self._abort_batch_request: bool = False
         # Mirror of the KUKA's own batch telemetry.
         self._robot_batch_seq = None
@@ -353,6 +367,10 @@ class EkiAxisMoveNode(Node):
         self.get_logger().info(
             f'  Command heartbeat:      {self._heartbeat_period:.3f} s'
             + ('  (0 = reply to every frame)' if self._heartbeat_period <= 0.0 else ''))
+        self.get_logger().info(
+            f'  Batch hold:             {self._batch_hold_sec:.3f} s tras el '
+            f'acuse, sin limite hasta el acuse (tope '
+            f'{self._batch_ack_timeout:.1f} s)')
         self.get_logger().info(
             f'  EKI buffer guard:       heartbeat stops at '
             f'{self._max_pending_heartbeat}, all commands stop at '
@@ -684,15 +702,23 @@ class EkiAxisMoveNode(Node):
         batch_consumed_fb = parsed.get('batch_consumed')
         batch_active_fb = parsed.get('batch_active')
 
-        # Progreso real del lote. Con aproximacion activa XD_BATCH_ACTIVE se
-        # pone a FALSE en el AVANCE, hasta $ADVANCE puntos antes de que el
-        # robot haya llegado, asi que por si solo no sirve para saber si el
-        # lote sigue en vuelo. El contador si: lo actualiza un TRIGGER en el
-        # movimiento principal. Mientras suba, el robot se esta moviendo.
+        # Progreso del lote. Con aproximacion activa XD_BATCH_ACTIVE se pone
+        # a FALSE en el AVANCE, hasta $ADVANCE puntos antes de que el robot
+        # haya llegado, asi que por si solo no sirve para saber si el lote
+        # sigue en vuelo. El contador si: XmlDualMove_better.src lo incrementa
+        # junto a cada PTP del lote. Mientras suba, quedan puntos por delante.
         if (isinstance(batch_consumed_fb, int)
                 and isinstance(self._robot_batch_consumed, int)
                 and batch_consumed_fb > self._robot_batch_consumed):
             self._last_batch_progress_at = time.monotonic()
+            self._batch_ack_seen = True
+
+        # ACUSE DEL LOTE. Robot/BatchSeq NO sirve para esto: la SPS lo escribe
+        # en cuanto acepta el paquete, antes de que el interprete del robot lo
+        # haya mirado siquiera. Lo unico que prueba que el robot COGIO el lote
+        # es XD_BATCH_ACTIVE, que el .src pone a TRUE justo al abrir su puerta.
+        if batch_active_fb is True:
+            self._batch_ack_seen = True
 
         self._robot_batch_seq = batch_seq_fb
         self._robot_batch_consumed = batch_consumed_fb
@@ -812,6 +838,7 @@ class EkiAxisMoveNode(Node):
         self._batch_sent_seq = 0
         self._last_batch_send_at = 0.0
         self._last_batch_progress_at = 0.0
+        self._batch_ack_seen = False
         self._robot_batch_seq = None
         self._robot_batch_consumed = None
         self._robot_batch_active = None
@@ -1132,15 +1159,40 @@ class EkiAxisMoveNode(Node):
 
     def _batch_in_flight(self) -> bool:
         """
-        True mientras el KUKA esta ejecutando un lote, o acaba de recibir uno.
+        True mientras el KUKA esta ejecutando un lote, o aun no lo ha cogido.
 
-        Robot/BatchActive es la fuente principal; la ventana de gracia cubre
-        el tramo en el que el lote ya viaja pero el robot todavia no lo ha
-        marcado activo, y los huecos cortos entre lotes consecutivos.
+        ANTES del acuse la espera NO puede ser un reloj. Un lote puede quedarse
+        esperando en el buzon todo el tiempo que el interprete del robot tarde
+        en llegar a su puerta, y ese tiempo no esta acotado: si el segmento
+        viene detras de una accion de garra, el interprete esta dentro de
+        GRPg_SetStateAndCheck y no mira el buzon hasta que la pinza termina
+        fisicamente. Con la ventana fija de 2 s se colaba un heartbeat en ese
+        hueco; el heartbeat lleva EnableMove=0 por diseno, la SPS lo copia a
+        XD_ENABLE_MOVE y la puerta del lote de XmlDualMove_better.src exige
+        XD_ENABLE_MOVE == TRUE. El lote quedaba muerto sin haber empezado, y
+        con batchSeq <> handledBatchSeq el camino de punto suelto tambien se
+        queda en pie: el programa no ejecutaba NADA. Ese era el 0/10 de T4.
+
+        DESPUES del acuse la ventana de tiempo si vale, y sigue igual: cubre
+        los huecos cortos entre lotes consecutivos de un mismo segmento.
         """
         if self._robot_batch_active is True:
             return True
-        if self._batch_sent_seq > 0 and self._batch_hold_sec > 0.0:
+        if self._batch_sent_seq <= 0:
+            return False
+
+        if not self._batch_ack_seen:
+            # El lote viaja pero el robot todavia no lo ha reclamado. Callar
+            # es lo unico seguro: un heartbeat aqui cierra la puerta del lote.
+            # El tope solo existe para no quedarse mudo si el lote se rechaza;
+            # el ejecutor aborta a los 20 s mucho antes de llegar a el, y su
+            # AbortBatch se atiende por encima de este guardia.
+            if self._batch_ack_timeout <= 0.0:
+                return True
+            return ((time.monotonic() - self._last_batch_send_at)
+                    < self._batch_ack_timeout)
+
+        if self._batch_hold_sec > 0.0:
             # La ventana se renueva con cada punto que el robot consume, de
             # modo que un lote largo no se queda sin cobertura a mitad.
             last = max(self._last_batch_send_at, self._last_batch_progress_at)
@@ -1196,6 +1248,10 @@ class EkiAxisMoveNode(Node):
             return None
 
         self._publish_command_xml(xml)
+        # Un batch_seq NUEVO vuelve a estar sin acusar. Un reenvio del MISMO
+        # batch_seq no borra un acuse ya visto.
+        if batch_seq != self._batch_sent_seq:
+            self._batch_ack_seen = False
         self._batch_sent_seq = batch_seq
         self._last_batch_send_at = time.monotonic()
         # El objetivo de punto suelto se re-ancla en la posicion REAL del

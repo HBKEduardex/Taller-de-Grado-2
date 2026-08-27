@@ -68,6 +68,11 @@ DEFAULT_BATCH_RESEND_PERIOD_SEC = 0.5
 
 TICK_MS = 100
 
+# Tolerancia para dar por alcanzado el ultimo punto de un segmento. El punto
+# final se ejecuta con parada exacta, asi que el error residual es el del
+# posicionamiento del robot, no el del redondeo por aproximacion.
+SEGMENT_ARRIVAL_TOL_DEG = 0.5
+
 STATE_IDLE = 'idle'
 STATE_RUNNING = 'running'
 STATE_GRIPPER = 'gripper'
@@ -164,6 +169,7 @@ class TrajectoryBatchExecutor(QObject):
         # Los puntos del segmento en curso son (crudo - linea base).
         self._raw_consumed = 0
         self._consumed_baseline = 0
+        self._segment_last_point: Dict[str, float] = {}
 
         self._gripper_queue: List[str] = []
         self._gripper_started_at = 0.0
@@ -241,6 +247,27 @@ class TrajectoryBatchExecutor(QObject):
                 self._last_consumed_total = total
                 self._last_progress_at = time.monotonic()
             self._robot_batch_consumed = consumed
+
+    def _reached_segment_end(self) -> bool:
+        """
+        True cuando el robot esta FISICAMENTE en el ultimo punto del segmento.
+
+        Sin esto el segmento se daria por terminado con el contador, que va
+        por delante del movimiento real, y la garra o el siguiente segmento
+        arrancarian con el robot todavia en marcha.
+        """
+        if not self._segment_last_point or not self._last_axis_actual:
+            # Sin referencia fiable no se bloquea la secuencia: se cae al
+            # criterio anterior, que es el contador.
+            return True
+        for axis in AXES:
+            target = self._segment_last_point.get(axis)
+            actual = self._last_axis_actual.get(axis)
+            if target is None or actual is None:
+                return True
+            if abs(float(target) - float(actual)) > SEGMENT_ARRIVAL_TOL_DEG:
+                return False
+        return True
 
     def _consumed_total(self, consumed_raw: int) -> int:
         """
@@ -406,9 +433,17 @@ class TrajectoryBatchExecutor(QObject):
         consumed = self._last_consumed_total
 
         # ---- Segmento terminado ----
+        # XD_BATCH_CONSUMED_COUNT se incrementa en el AVANCE del interprete,
+        # asi que cuenta puntos PLANIFICADOS y va por delante del robot hasta
+        # $ADVANCE puntos. Por si solo no prueba que el robot haya llegado.
+        # El ultimo punto de un segmento SI se alcanza con exactitud: al no
+        # haber movimiento siguiente en el avance, el controlador no puede
+        # aproximar y ejecuta parada exacta (KSS 8.2 SI, 8.5, p. 235). Asi
+        # que la llegada se comprueba contra AxisActual, que es fisico.
         if (self._batch_cursor >= len(self._batches)
                 and consumed >= self._segment_points
-                and self._robot_batch_active is not True):
+                and self._robot_batch_active is not True
+                and self._reached_segment_end()):
             self._on_segment_finished()
             return
 
@@ -478,6 +513,9 @@ class TrajectoryBatchExecutor(QObject):
             return
 
         self._batches = batches
+        # Ultimo punto del segmento: la llegada FISICA a el es lo que da el
+        # segmento por terminado, no el contador del KUKA.
+        self._segment_last_point = dict(batches[-1][-1]) if batches else {}
         self._batch_cursor = 0
         self._sent_points = 0
         self._segment_points = sum(len(b) for b in batches)
