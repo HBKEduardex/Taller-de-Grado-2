@@ -812,40 +812,32 @@ LOOP
               ;FOLD Validate this point - same limits as the baseline
                 batchPointOK = TRUE
 
-                IF batchTarget.A1 < -160.0 THEN
+                ; MISMOS limites y misma consecuencia que antes: lo unico
+                ; que cambia es que cada eje se comprueba con UNA sentencia
+                ; en vez de dos, igual que ya se hacia justo debajo con el
+                ; delta.  Son 18 lineas menos de interprete POR PUNTO.
+                ; KSS 8.2 SI, 7.5.3, p. 208: el avance planifica hasta
+                ; $ADVANCE bloques, pero "the actual number is dependent on
+                ; the capacity of the computer".  Cuanto menos cuesta cada
+                ; punto, mas lejos llega el avance con el mismo $ADVANCE, y
+                ; menos probable es que la cola de movimiento se vacie entre
+                ; dos PTP encadenados.  Ninguna proteccion se toca.
+                IF (batchTarget.A1 < -160.0) OR (batchTarget.A1 > 160.0) THEN
                   batchPointOK = FALSE
                 ENDIF
-                IF batchTarget.A1 > 160.0 THEN
+                IF (batchTarget.A2 < -180.0) OR (batchTarget.A2 > 35.0) THEN
                   batchPointOK = FALSE
                 ENDIF
-                IF batchTarget.A2 < -180.0 THEN
+                IF (batchTarget.A3 < -110.0) OR (batchTarget.A3 > 146.0) THEN
                   batchPointOK = FALSE
                 ENDIF
-                IF batchTarget.A2 > 35.0 THEN
+                IF (batchTarget.A4 < -175.0) OR (batchTarget.A4 > 175.0) THEN
                   batchPointOK = FALSE
                 ENDIF
-                IF batchTarget.A3 < -110.0 THEN
+                IF (batchTarget.A5 < -110.0) OR (batchTarget.A5 > 110.0) THEN
                   batchPointOK = FALSE
                 ENDIF
-                IF batchTarget.A3 > 146.0 THEN
-                  batchPointOK = FALSE
-                ENDIF
-                IF batchTarget.A4 < -175.0 THEN
-                  batchPointOK = FALSE
-                ENDIF
-                IF batchTarget.A4 > 175.0 THEN
-                  batchPointOK = FALSE
-                ENDIF
-                IF batchTarget.A5 < -110.0 THEN
-                  batchPointOK = FALSE
-                ENDIF
-                IF batchTarget.A5 > 110.0 THEN
-                  batchPointOK = FALSE
-                ENDIF
-                IF batchTarget.A6 < -340.0 THEN
-                  batchPointOK = FALSE
-                ENDIF
-                IF batchTarget.A6 > 340.0 THEN
+                IF (batchTarget.A6 < -340.0) OR (batchTarget.A6 > 340.0) THEN
                   batchPointOK = FALSE
                 ENDIF
               ;ENDFOLD (Validate this point)
