@@ -455,6 +455,80 @@ class DualKukaRvizWindow(QMainWindow):
 
         # Mode Selector removed in favor of QTabWidget tabs
 
+        # ── Vistas dentro de la MISMA ventana ────────────────────────
+        # Reorganizacion PURAMENTE VISUAL: los widgets son exactamente los
+        # mismos de siempre y conservan sus conexiones. Lo unico que cambia
+        # es en que pagina se colocan. Cambiar de pagina no envia nada al
+        # robot ni altera ningun estado.
+        _nav_style = (
+            f'QPushButton {{ background-color: transparent; color: {ACCENT};'
+            f' border: 1px solid {ACCENT}; border-radius: 6px;'
+            f' padding: 7px 18px; font-weight: bold; letter-spacing: 1px; }}'
+            f'QPushButton:hover {{ background-color: {PANEL_BG}; }}'
+        )
+
+        self._view_stack = QStackedWidget()
+
+        self._page_trajectories = QWidget()
+        traj_layout = QVBoxLayout(self._page_trajectories)
+        traj_layout.setContentsMargins(0, 0, 0, 0)
+        traj_layout.setSpacing(8)
+
+        self._page_manual = QWidget()
+        manual_layout = QVBoxLayout(self._page_manual)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
+        manual_layout.setSpacing(8)
+
+        nav_traj = QHBoxLayout()
+        self._btn_view_manual = QPushButton('MODO MANUAL  \u25b6')
+        self._btn_view_manual.setStyleSheet(_nav_style)
+        self._btn_view_manual.setCursor(Qt.PointingHandCursor)
+        self._btn_view_manual.setToolTip(
+            'Muestra los controles manuales en esta misma ventana.\n'
+            'No envia ningun comando al robot.'
+        )
+        self._btn_view_manual.clicked.connect(
+            lambda: self._view_stack.setCurrentWidget(self._page_manual))
+        nav_traj.addWidget(self._btn_view_manual)
+        nav_traj.addStretch(1)
+
+        # ENABLE MOVE duplicado: el MISMO control, en una segunda
+        # ubicacion visual. Se construye aqui y se enlaza mas abajo,
+        # cuando ya existe el checkbox original.
+        self._chk_enable_move_traj = QCheckBox('ENABLE MOVE')
+        self._chk_enable_move_traj.setChecked(False)
+        self._chk_enable_move_traj.setStyleSheet(
+            f'QCheckBox {{ color: {WARN_CLR}; font-weight: bold;'
+            f' font-size: 13px; }}'
+        )
+        nav_traj.addWidget(self._chk_enable_move_traj)
+
+        self._lbl_enable_status_traj = QLabel('enable_move = false')
+        self._lbl_enable_status_traj.setStyleSheet(
+            f'color: {TEXT_SEC}; font-size: 12px;')
+        nav_traj.addWidget(self._lbl_enable_status_traj)
+
+        traj_layout.addLayout(nav_traj)
+
+        nav_manual = QHBoxLayout()
+        self._btn_view_traj = QPushButton('\u25c0  VOLVER A TRAYECTORIAS')
+        self._btn_view_traj.setStyleSheet(_nav_style)
+        self._btn_view_traj.setCursor(Qt.PointingHandCursor)
+        self._btn_view_traj.setToolTip(
+            'Vuelve a la vista de trayectorias en esta misma ventana.\n'
+            'No envia ningun comando al robot.'
+        )
+        self._btn_view_traj.clicked.connect(
+            lambda: self._view_stack.setCurrentWidget(self._page_trajectories))
+        nav_manual.addWidget(self._btn_view_traj)
+        nav_manual.addStretch(1)
+        manual_layout.addLayout(nav_manual)
+
+        self._view_stack.addWidget(self._page_trajectories)
+        self._view_stack.addWidget(self._page_manual)
+        self._view_stack.setCurrentWidget(self._page_trajectories)
+        main_layout.addWidget(self._view_stack)
+
         # ── Tabs ─────────────────────────────────────────────────────
         self._tabs = QTabWidget()
         
@@ -474,7 +548,7 @@ class DualKukaRvizWindow(QMainWindow):
         
         self._tabs.currentChanged.connect(self._on_tab_changed)
         
-        main_layout.addWidget(self._tabs)
+        manual_layout.addWidget(self._tabs)
 
         # ── Joint table ──────────────────────────────────────────────
         table_group = QGroupBox('Posiciones Articulares')
@@ -679,7 +753,7 @@ class DualKukaRvizWindow(QMainWindow):
         self._btn_reset.clicked.connect(self._on_reset)
         btn_layout.addWidget(self._btn_reset)
 
-        main_layout.addLayout(btn_layout)
+        manual_layout.addLayout(btn_layout)
 
         # ── Garra (acción puntual, no mueve el robot) ─────────────────
         gripper_layout = QHBoxLayout()
@@ -711,7 +785,7 @@ class DualKukaRvizWindow(QMainWindow):
         gripper_layout.addWidget(self._btn_gripper_close)
 
         gripper_layout.addStretch(1)
-        main_layout.addLayout(gripper_layout)
+        manual_layout.addLayout(gripper_layout)
 
         # ── Enable Move toggle ───────────────────────────────────────
         enable_layout = QHBoxLayout()
@@ -734,7 +808,17 @@ class DualKukaRvizWindow(QMainWindow):
         self._lbl_tracking.setStyleSheet(f'color: {TEXT_SEC}; font-size: 12px;')
         enable_layout.addWidget(self._lbl_tracking)
 
-        main_layout.addLayout(enable_layout)
+        manual_layout.addLayout(enable_layout)
+
+        # El ENABLE MOVE de la vista TRAYECTORIAS es un espejo de este:
+        # reenvia el cambio a self._chk_enable_move, que sigue siendo el
+        # unico que ejecuta _on_enable_move_changed. Esa funcion, el
+        # checkbox original y el modelo no se han tocado.
+        self._chk_enable_move_traj.stateChanged.connect(
+            self._on_enable_move_traj_toggled)
+        self._chk_enable_move.stateChanged.connect(
+            self._sync_enable_move_traj)
+        self._sync_enable_move_traj()
 
         # ── Info panels ──────────────────────────────────────────────
         if self._show_raw_json or self._show_raw_xml:
@@ -747,7 +831,9 @@ class DualKukaRvizWindow(QMainWindow):
                 info_layout.addWidget(QLabel('Último feedback JSON:'), 0, col)
                 self._txt_feedback = QTextEdit()
                 self._txt_feedback.setReadOnly(True)
-                self._txt_feedback.setMaximumHeight(90)
+                self._txt_feedback.setMinimumHeight(90)
+                self._txt_feedback.setSizePolicy(
+                    QSizePolicy.Expanding, QSizePolicy.Expanding)
                 info_layout.addWidget(self._txt_feedback, 1, col)
 
                 col += 1
@@ -755,7 +841,9 @@ class DualKukaRvizWindow(QMainWindow):
                 info_layout.addWidget(QLabel('Último comando JSON:'), 0, col)
                 self._txt_command = QTextEdit()
                 self._txt_command.setReadOnly(True)
-                self._txt_command.setMaximumHeight(90)
+                self._txt_command.setMinimumHeight(90)
+                self._txt_command.setSizePolicy(
+                    QSizePolicy.Expanding, QSizePolicy.Expanding)
                 info_layout.addWidget(self._txt_command, 1, col)
                 col += 1
 
@@ -764,11 +852,17 @@ class DualKukaRvizWindow(QMainWindow):
                 info_layout.addWidget(QLabel('Último XML enviado:'), 0, col)
                 self._txt_cmd_xml = QTextEdit()
                 self._txt_cmd_xml.setReadOnly(True)
-                self._txt_cmd_xml.setMaximumHeight(90)
+                self._txt_cmd_xml.setMinimumHeight(90)
+                self._txt_cmd_xml.setSizePolicy(
+                    QSizePolicy.Expanding, QSizePolicy.Expanding)
                 info_layout.addWidget(self._txt_cmd_xml, 1, col)
                 col += 1
 
-            main_layout.addWidget(info_group)
+            # Fila 0 = etiquetas (altura fija), fila 1 = terminales, que
+            # se llevan todo el alto sobrante y suben hasta las etiquetas.
+            info_layout.setRowStretch(0, 0)
+            info_layout.setRowStretch(1, 1)
+            manual_layout.addWidget(info_group, 1)
 
         # ── Secuencias de trayectorias (capa AÑADIDA) ────────────────
         # Mismo widget que la GUI original. Reutiliza este modelo, este
@@ -781,7 +875,7 @@ class DualKukaRvizWindow(QMainWindow):
             joint_send_fn=self._send_trajectory_joint_command,
             gripper_send_fn=self._send_gripper_command,
         )
-        main_layout.addWidget(self._trajectory_panel)
+        traj_layout.addWidget(self._trajectory_panel, 1)
 
         # ── Modo LOTE (capa AÑADIDA, ruta paralela) ─────────────────
         # Panel independiente, debajo del anterior. El panel base y su
@@ -795,7 +889,7 @@ class DualKukaRvizWindow(QMainWindow):
             config=self._config,
             gripper_send_fn=self._send_gripper_command,
         )
-        main_layout.addWidget(self._trajectory_batch_panel)
+        traj_layout.addWidget(self._trajectory_batch_panel, 1)
 
         self._stack.addWidget(page)
         self._refresh_table()
@@ -1268,6 +1362,30 @@ class DualKukaRvizWindow(QMainWindow):
         clr = ACCENT2 if checked else TEXT_SEC
         self._lbl_enable_status.setText(status_text)
         self._lbl_enable_status.setStyleSheet(f'color: {clr}; font-size: 12px;')
+
+    def _on_enable_move_traj_toggled(self, state):
+        """ENABLE MOVE duplicado de la vista TRAYECTORIAS.
+
+        No tiene logica propia: mueve el checkbox original y vuelve a
+        sincronizar, por si el dialogo de confirmacion se cancela y el
+        original se repone a false con las senales bloqueadas.
+        """
+        checked = (state == Qt.Checked)
+        if self._chk_enable_move.isChecked() != checked:
+            self._chk_enable_move.setChecked(checked)
+        self._sync_enable_move_traj()
+
+    def _sync_enable_move_traj(self, *_args):
+        """Copia estado y texto del ENABLE MOVE original al duplicado."""
+        chk = self._chk_enable_move_traj
+        checked = self._chk_enable_move.isChecked()
+        if chk.isChecked() != checked:
+            chk.blockSignals(True)
+            chk.setChecked(checked)
+            chk.blockSignals(False)
+        self._lbl_enable_status_traj.setText(self._lbl_enable_status.text())
+        self._lbl_enable_status_traj.setStyleSheet(
+            self._lbl_enable_status.styleSheet())
 
     def _on_step(self, axis: str, direction: int):
         """Increment or decrement a joint target."""

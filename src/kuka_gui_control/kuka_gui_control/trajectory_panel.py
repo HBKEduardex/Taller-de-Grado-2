@@ -33,7 +33,8 @@ try:
     from PyQt5.QtCore import Qt, QTimer, pyqtSlot
     from PyQt5.QtWidgets import (
         QButtonGroup, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-        QMessageBox, QPushButton, QRadioButton, QTextEdit, QVBoxLayout,
+        QMessageBox, QPushButton, QRadioButton, QSizePolicy, QTextEdit,
+        QVBoxLayout,
     )
 except ImportError as e:
     raise ImportError(
@@ -350,13 +351,17 @@ class TrajectorySequencePanel(QGroupBox):
         # ── Log temporal ─────────────────────────────────────────────
         self._txt_log = QTextEdit()
         self._txt_log.setReadOnly(True)
-        self._txt_log.setMaximumHeight(96)
+        # El log crece a lo vertical y se queda con el espacio sobrante,
+        # de modo que la linea de estado queda pegada a los botones.
+        self._txt_log.setMinimumHeight(96)
+        self._txt_log.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._txt_log.setStyleSheet(
             f'background-color: {PANEL_BG}; border: 1px solid {BORDER_CLR}; '
             f'border-radius: 4px; color: {TEXT_PRI}; '
             f'font-family: monospace; font-size: 11px;'
         )
-        layout.addWidget(self._txt_log)
+        layout.addWidget(self._txt_log, 1)
 
     def _connect_signals(self) -> None:
         # El feedback del KUKA se escucha directamente del bridge existente:

@@ -35,7 +35,8 @@ try:
     from PyQt5.QtCore import Qt, pyqtSlot
     from PyQt5.QtWidgets import (
         QButtonGroup, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-        QMessageBox, QPushButton, QRadioButton, QTextEdit, QVBoxLayout,
+        QMessageBox, QPushButton, QRadioButton, QSizePolicy, QTextEdit,
+        QVBoxLayout,
     )
 except ImportError as e:
     raise ImportError(
@@ -206,12 +207,16 @@ class TrajectoryBatchPanel(QGroupBox):
 
         self._txt_log = QTextEdit()
         self._txt_log.setReadOnly(True)
-        self._txt_log.setMaximumHeight(84)
+        # Mismo criterio que el panel de secuencias: el log ocupa el
+        # espacio libre y el texto de estado sube junto a los botones.
+        self._txt_log.setMinimumHeight(84)
+        self._txt_log.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._txt_log.setStyleSheet(
             f'background-color: {PANEL_BG}; border: 1px solid {BORDER_CLR}; '
             f'border-radius: 4px; color: {TEXT_PRI}; '
             f'font-family: monospace; font-size: 11px;')
-        layout.addWidget(self._txt_log)
+        layout.addWidget(self._txt_log, 1)
 
     def _connect_signals(self) -> None:
         # Una conexión más a la MISMA señal del bridge existente. Los slots
