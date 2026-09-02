@@ -1,0 +1,565 @@
+.
+├── arbol_entorno2.txt
+├── .claude
+│   ├── settings.json
+│   └── settings.local.json
+├── .gitignore
+├── KUKA CODES
+│   ├── $config.dat
+│   ├── config
+│   │   ├── XmlAxisCommandLoop.xml
+│   │   ├── XmlAxisLoop.xml
+│   │   ├── XmlAxisMove.xml
+│   │   ├── XmlDualMove_better.xml
+│   │   └── XmlDualMove.xml
+│   ├── config_submit_better.dat
+│   ├── config_submit.dat
+│   ├── programs
+│   │   ├── XmlAxisCommandLoop.src
+│   │   ├── XmlAxisLoop.src
+│   │   ├── XmlAxisMove.src
+│   │   ├── XmlDualMove_better.src
+│   │   └── XmlDualMove.src
+│   ├── sps.sub
+│   ├── sps_submit_better.sub
+│   └── sps_submit.sub
+├── KUKA KRL EXAMPLES
+│   ├── EthernetKRL
+│   │   ├── DOC
+│   │   │   ├── Example
+│   │   │   ├── KST_Ethernet_KRL_30_de.pdf
+│   │   │   ├── KST_Ethernet_KRL_30_en.pdf
+│   │   │   ├── KST_Ethernet_KRL_30_es.pdf
+│   │   │   ├── KST_Ethernet_KRL_30_fr.pdf
+│   │   │   ├── KST_Ethernet_KRL_30_it.pdf
+│   │   │   ├── KST_Ethernet_KRL_30_pt.pdf
+│   │   │   └── KST_Ethernet_KRL_30_zh.pdf
+│   │   └── LICENSE
+│   │       ├── License_agreement_KUKA_general.pdf
+│   │       └── Lizenzerklaerung_KUKA_allgemein.pdf
+│   └── KSS82SystemIntergrators.pdf
+├── logs
+│   ├── improve10.csv
+│   ├── improve1.csv
+│   ├── improve2.csv
+│   ├── improve3.csv
+│   ├── improve4.csv
+│   ├── improve5.csv
+│   ├── improve6.csv
+│   ├── improve7.csv
+│   ├── improve8.csv
+│   ├── improve9.csv
+│   ├── kuka_telemetry_20260817_184845.csv
+│   ├── kuka_telemetry_20260817_184845.db
+│   ├── kuka_telemetry_20260817_184940.csv
+│   ├── kuka_telemetry_20260817_184940.db
+│   ├── kuka_telemetry_20260817_185206.csv
+│   ├── kuka_telemetry_20260817_185206.db
+│   ├── kuka_telemetry_20260817_185306.csv
+│   ├── kuka_telemetry_20260817_185306.db
+│   ├── kuka_telemetry_20260817_185613.csv
+│   ├── kuka_telemetry_20260817_185613.db
+│   ├── kuka_telemetry_20260817_200839.csv
+│   ├── kuka_telemetry_20260817_200839.db
+│   ├── kuka_telemetry_20260817_205036.csv
+│   ├── kuka_telemetry_20260817_205036.db
+│   ├── kuka_telemetry_20260818_202024.csv
+│   ├── kuka_telemetry_20260818_202024.db
+│   ├── kuka_telemetry_20260818_204024.csv
+│   ├── kuka_telemetry_20260818_204024.db
+│   ├── kuka_telemetry_20260818_213205.csv
+│   ├── kuka_telemetry_20260818_213205.db
+│   ├── kuka_telemetry_20260819_204826.csv
+│   ├── kuka_telemetry_20260819_204826.db
+│   ├── kuka_telemetry_20260819_205108.csv
+│   ├── kuka_telemetry_20260819_205108.db
+│   ├── kuka_telemetry_20260819_212010.csv
+│   ├── kuka_telemetry_20260819_212010.db
+│   ├── kuka_telemetry_20260819_213057.csv
+│   ├── kuka_telemetry_20260819_213057.db
+│   ├── kuka_telemetry_20260819_213226.csv
+│   ├── kuka_telemetry_20260819_213226.db
+│   ├── kuka_telemetry_20260820_155411.csv
+│   ├── kuka_telemetry_20260820_155411.db
+│   ├── kuka_telemetry_20260820_160039.db
+│   ├── kuka_telemetry_20260820_211934.db
+│   ├── kuka_telemetry_20260821_211403.db
+│   ├── kuka_telemetry_20260821_211717.db
+│   ├── kuka_telemetry_20260821_211936.db
+│   ├── kuka_telemetry_20260821_212521.db
+│   ├── kuka_telemetry_20260821_212834.db
+│   ├── kuka_telemetry_20260821_213106.db
+│   ├── kuka_telemetry_20260821_213312.db
+│   ├── kuka_telemetry_20260821_213606.db
+│   ├── kuka_telemetry_20260821_213805.db
+│   ├── kuka_telemetry_20260821_214008.db
+│   ├── kuka_telemetry_20260822_095952.csv
+│   ├── kuka_telemetry_20260822_095952.db
+│   ├── kuka_telemetry_20260822_101103.csv
+│   ├── kuka_telemetry_20260822_101103.db
+│   ├── kuka_telemetry_20260822_102645.csv
+│   ├── kuka_telemetry_20260822_102645.db
+│   ├── kuka_telemetry_20260822_103652.csv
+│   ├── kuka_telemetry_20260822_103652.db
+│   ├── kuka_telemetry_20260822_104333.db
+│   ├── kuka_telemetry_20260822_105740.csv
+│   ├── kuka_telemetry_20260822_105740.db
+│   ├── kuka_telemetry_20260822_110433.csv
+│   ├── kuka_telemetry_20260822_110433.db
+│   ├── kuka_telemetry_20260822_110715.db
+│   ├── kuka_telemetry_20260822_112614.db
+│   ├── kuka_telemetry_20260822_113856.db
+│   ├── kuka_telemetry_20260822_115134.db
+│   ├── kuka_telemetry_20260822_120246.db
+│   ├── kuka_telemetry_20260822_121417.db
+│   ├── kuka_telemetry_20260822_121847.db
+│   ├── kuka_telemetry_20260822_122549.db
+│   ├── kuka_telemetry_20260822_123723.db
+│   ├── kuka_telemetry_20260822_124522.db
+│   ├── kuka_telemetry_20260822_131026.db
+│   ├── kuka_telemetry_20260822_194935.csv
+│   ├── kuka_telemetry_20260822_194935.db
+│   ├── kuka_telemetry_20260822_195858.csv
+│   ├── kuka_telemetry_20260822_195858.db
+│   ├── kuka_telemetry_20260822_200752.db
+│   ├── kuka_telemetry_20260822_201124.db
+│   ├── kuka_telemetry_20260822_201451.db
+│   ├── kuka_telemetry_20260822_201818.db
+│   ├── kuka_telemetry_20260822_202144.db
+│   ├── kuka_telemetry_20260822_202508.db
+│   ├── kuka_telemetry_20260822_202833.db
+│   ├── kuka_telemetry_20260822_203204.db
+│   ├── kuka_telemetry_20260822_203528.db
+│   ├── kuka_telemetry_20260822_203901.db
+│   ├── kuka_telemetry_20260826_125340.csv
+│   ├── kuka_telemetry_20260826_125340.db
+│   ├── kuka_telemetry_20260827_204652.csv
+│   ├── kuka_telemetry_20260827_204652.db
+│   ├── kuka_telemetry_20260827_212212.csv
+│   ├── kuka_telemetry_20260827_212212.db
+│   ├── kuka_telemetry_20260827_212818.db
+│   ├── kuka_telemetry_20260827_213001.db
+│   ├── kuka_telemetry_20260827_213147.db
+│   ├── kuka_telemetry_20260827_213339.db
+│   ├── kuka_telemetry_20260827_213533.db
+│   ├── kuka_telemetry_20260827_213727.db
+│   ├── kuka_telemetry_20260827_213915.db
+│   ├── kuka_telemetry_20260827_214112.db
+│   ├── kuka_telemetry_20260827_214306.db
+│   ├── kuka_telemetry_20260827_214509.db
+│   ├── kuka_telemetry_20260828_184715.db
+│   ├── kuka_telemetry_20260828_194805.db
+│   ├── kuka_telemetry_20260828_194932.db
+│   ├── kuka_telemetry_20260828_195439.db
+│   ├── kuka_telemetry_20260828_195615.db
+│   ├── kuka_telemetry_20260828_200325.db
+│   ├── kuka_telemetry_20260828_200455.db
+│   ├── kuka_telemetry_20260828_200623.db
+│   ├── kuka_telemetry_20260828_201247.db
+│   ├── kuka_telemetry_20260828_201420.db
+│   ├── kuka_telemetry_20260831_195623.db
+│   ├── kuka_telemetry_20260831_200029.db
+│   ├── kuka_telemetry_20260831_200545.db
+│   ├── kuka_telemetry_20260831_201019.db
+│   ├── kuka_telemetry_20260831_201501.db
+│   ├── kuka_telemetry_20260831_201930.db
+│   ├── kuka_telemetry_20260831_202531.db
+│   ├── kuka_telemetry_20260831_202959.db
+│   ├── kuka_telemetry_20260831_203450.db
+│   ├── kuka_telemetry_20260831_203942.db
+│   ├── kuka_telemetry_20260831_204440.db
+│   ├── kuka_telemetry_20260831_204724.db
+│   ├── kuka_telemetry_20260831_204947.db
+│   ├── kuka_telemetry_20260831_205251.db
+│   ├── kuka_telemetry_20260831_205540.db
+│   ├── kuka_telemetry_20260831_205808.db
+│   ├── kuka_telemetry_20260831_210053.db
+│   ├── kuka_telemetry_20260831_210345.db
+│   ├── kuka_telemetry_20260831_210630.db
+│   ├── kuka_telemetry_20260831_210849.db
+│   ├── moveit10.csv
+│   ├── moveit1.csv
+│   ├── moveit2.csv
+│   ├── moveit3.csv
+│   ├── moveit4.csv
+│   ├── moveit5.csv
+│   ├── moveit6.csv
+│   ├── moveit7.csv
+│   ├── moveit8.csv
+│   ├── moveit9.csv
+│   ├── squareKRL10.csv
+│   ├── squareKRL1.csv
+│   ├── squareKRL2.csv
+│   ├── squareKRL3.csv
+│   ├── squareKRL4.csv
+│   ├── squareKRL5.csv
+│   ├── squareKRL6.csv
+│   ├── squareKRL7.csv
+│   ├── squareKRL8.csv
+│   ├── squareKRL9.csv
+│   ├── SquareMoveitBase10.csv
+│   ├── SquareMoveitBase1.csv
+│   ├── SquareMoveitBase2.csv
+│   ├── SquareMoveitBase3.csv
+│   ├── SquareMoveitBase4.csv
+│   ├── SquareMoveitBase5.csv
+│   ├── SquareMoveitBase6.csv
+│   ├── SquareMoveitBase7.csv
+│   ├── SquareMoveitBase8.csv
+│   ├── SquareMoveitBase9.csv
+│   ├── SquareMoveitMejorado10.csv
+│   ├── SquareMoveitMejorado1.csv
+│   ├── SquareMoveitMejorado2.csv
+│   ├── SquareMoveitMejorado3.csv
+│   ├── SquareMoveitMejorado4.csv
+│   ├── SquareMoveitMejorado5.csv
+│   ├── SquareMoveitMejorado6.csv
+│   ├── SquareMoveitMejorado7.csv
+│   ├── SquareMoveitMejorado8.csv
+│   ├── SquareMoveitMejorado9.csv
+│   ├── test10_vel50.csv
+│   ├── test11_vel50.csv
+│   ├── test1.csv
+│   ├── test2_vel50.csv
+│   ├── test3_vel50.csv
+│   ├── test4_vel50.csv
+│   ├── test5_vel50.csv
+│   ├── test6_vel50.csv
+│   ├── test7_vel50.csv
+│   ├── test8_vel50.csv
+│   ├── test9_vel50.csv
+│   ├── test_aut10.csv
+│   ├── test_aut11.csv
+│   ├── test_aut12.csv
+│   ├── test_aut2.csv
+│   ├── test_aut3.csv
+│   ├── test_aut4.csv
+│   ├── test_aut5.csv
+│   ├── test_aut6.csv
+│   ├── test_aut7.csv
+│   ├── test_aut8.csv
+│   ├── test_aut9.csv
+│   ├── test_aut.csv
+│   └── test.csv
+├── Programs extracted from KUKA
+│   ├── 126PARCIAL
+│   │   ├── CBEX.dat
+│   │   ├── CBEX.src
+│   │   ├── exA126.dat
+│   │   ├── exA126.src
+│   │   ├── exB126.dat
+│   │   ├── exB126.src
+│   │   ├── exC126.dat
+│   │   ├── exC126.src
+│   │   ├── exD126.dat
+│   │   ├── exD126.src
+│   │   ├── exE126.dat
+│   │   ├── exE126.src
+│   │   ├── exF126.dat
+│   │   └── exF126.src
+│   ├── AJEDREZ
+│   │   ├── chess.dat
+│   │   ├── chess.src
+│   │   ├── MOVER01.dat
+│   │   ├── MOVER01.src
+│   │   ├── PRUEBA01.dat
+│   │   ├── PRUEBA01.src
+│   │   ├── PRUEBA02.dat
+│   │   ├── PRUEBA02.src
+│   │   ├── sgh.dat
+│   │   └── sgh.src
+│   ├── arco.dat
+│   ├── arco.src
+│   ├── CollDetect_UserAction.dat
+│   ├── CollDetect_UserAction.src
+│   ├── DEMOS
+│   │   ├── CUBO2G.dat
+│   │   ├── CUBO2G.src
+│   │   ├── DEMO26.dat
+│   │   ├── DEMO26.src
+│   │   ├── LOGO2025.dat
+│   │   └── LOGO2025.src
+│   ├── diprob26
+│   │   ├── g1.dat
+│   │   ├── g1.src
+│   │   ├── g2.dat
+│   │   ├── g2.src
+│   │   ├── g3.dat
+│   │   ├── g3.src
+│   │   ├── g4.dat
+│   │   ├── g4.src
+│   │   ├── g5.dat
+│   │   ├── g5.src
+│   │   └── IO
+│   │       ├── G1IN.dat
+│   │       ├── G1IN.src
+│   │       ├── G2IN.dat
+│   │       ├── G2IN.src
+│   │       ├── G3IN.dat
+│   │       ├── G3IN.src
+│   │       ├── G4IN.dat
+│   │       ├── G4IN.src
+│   │       ├── G5IN.dat
+│   │       ├── G5IN.src
+│   │       ├── PLANTILLA.dat
+│   │       └── PLANTILLA.src
+│   ├── EDUARDO
+│   │   ├── XmlAxisCommandLoop.src
+│   │   ├── XmlAxisLoop.src
+│   │   └── XmlTransmit.src
+│   ├── G1_kuka_eki_hw_interface.src
+│   ├── G2_kuka_eki_hw_interface.src
+│   ├── home.dat
+│   ├── home.src
+│   ├── IMT312_126
+│   │   ├── GA126.dat
+│   │   ├── GA126DIB.dat
+│   │   ├── GA126DIB.src
+│   │   ├── GA126.src
+│   │   ├── GB126.dat
+│   │   ├── GB126DIB.dat
+│   │   ├── GB126DIB.src
+│   │   ├── GB126.src
+│   │   ├── GC126.dat
+│   │   ├── GC126DIB.dat
+│   │   ├── GC126DIB.src
+│   │   ├── GC126.src
+│   │   ├── GD126.dat
+│   │   ├── GD126DIB.dat
+│   │   ├── GD126DIB.src
+│   │   ├── GD126.src
+│   │   ├── GE126.dat
+│   │   ├── GE126DIB.dat
+│   │   ├── GE126DIB.src
+│   │   ├── GE126.src
+│   │   ├── GF126.dat
+│   │   ├── GF126DIB.dat
+│   │   ├── GF126DIB.src
+│   │   └── GF126.src
+│   ├── IMT312_225
+│   │   ├── epga.dat
+│   │   ├── epga.src
+│   │   ├── epgb.dat
+│   │   ├── epgb.src
+│   │   ├── EPGC.dat
+│   │   ├── EPGC.src
+│   │   ├── EPGD.dat
+│   │   ├── EPGD.src
+│   │   ├── EPGE.dat
+│   │   ├── EPGE.src
+│   │   ├── EX02.dat
+│   │   ├── EX02.src
+│   │   ├── EX03.dat
+│   │   ├── EX03.src
+│   │   ├── EX04.dat
+│   │   ├── EX04.src
+│   │   ├── GA01.dat
+│   │   ├── GA01.src
+│   │   ├── GA02.dat
+│   │   ├── GA02.src
+│   │   ├── GA03.dat
+│   │   ├── GA03.src
+│   │   ├── ga04.dat
+│   │   ├── ga04.src
+│   │   ├── GB01.dat
+│   │   ├── GB01.src
+│   │   ├── GB02.dat
+│   │   ├── GB02.src
+│   │   ├── gb03.dat
+│   │   ├── gb03.src
+│   │   ├── gb04.dat
+│   │   ├── gb04.src
+│   │   ├── GC01.dat
+│   │   ├── GC01.src
+│   │   ├── GC02.dat
+│   │   ├── GC02.src
+│   │   ├── GC03.dat
+│   │   ├── GC03.src
+│   │   ├── GC04.dat
+│   │   ├── GC04.src
+│   │   ├── GD01.dat
+│   │   ├── GD01.src
+│   │   ├── GD02.dat
+│   │   ├── GD02.src
+│   │   ├── GD03.dat
+│   │   ├── GD03.src
+│   │   ├── GD04.dat
+│   │   ├── GD04.src
+│   │   ├── GE01.dat
+│   │   ├── GE01.src
+│   │   ├── GE02.dat
+│   │   ├── GE02.src
+│   │   ├── GE03.dat
+│   │   ├── GE03.src
+│   │   ├── SOFT01.dat
+│   │   ├── SOFT01.src
+│   │   ├── SOFT02.dat
+│   │   └── SOFT02.src
+│   ├── krl_test_copy.dat
+│   ├── krl_test_copy.src
+│   ├── krl_test.dat
+│   ├── krl_test.src
+│   ├── kuka_eki_hw_interface.dat
+│   ├── kuka_eki_hw_interface.src
+│   ├── masref_user.dat
+│   ├── masref_user.src
+│   ├── PUBLICIDAD SOCIEDAD
+│   │   ├── cubos.dat
+│   │   ├── cubos.src
+│   │   ├── demo.dat
+│   │   ├── demo.src
+│   │   ├── demp2.dat
+│   │   ├── demp2.src
+│   │   ├── dipPUBLI.dat
+│   │   ├── dipPUBLI.src
+│   │   ├── PUBLCIDAD.dat
+│   │   └── PUBLCIDAD.src
+│   ├── ROBOCHESS124
+│   │   ├── PRUEBAMOV1.dat
+│   │   └── PRUEBAMOV1.src
+│   ├── Ros
+│   ├── TEST001.dat
+│   ├── TEST001.src
+│   └── XmlServer.src
+├── README.md
+├── scripts comparativo
+│   ├── analisis_comparativo_gui.py
+│   └── resultados
+│       ├── informes_grupales
+│       │   ├── informe_comparativo_grupo_KRL CUADRADO.docx
+│       │   ├── informe_comparativo_grupo_KRL PICK AND PLACE.docx
+│       │   ├── informe_comparativo_grupo_MOVEIT2 CUADRADO.docx
+│       │   ├── informe_comparativo_grupo_MoveIt2 PICK AND PLACE.docx
+│       │   ├── informe_comparativo_grupo_SISTEMA MEJORADO CUADRADO.docx
+│       │   ├── informe_comparativo_grupo_SISTEMA_MEJORADO PICK AND PLACE.docx
+│       │   └── .~lock.informe_comparativo_grupo_SISTEMA_MEJORADO.docx#
+│       └── kuka_telemetry_20260820_160039
+│           ├── 01_posicion_articular.png
+│           ├── 02_velocidad_articular.png
+│           ├── 03_aceleracion_articular.png
+│           ├── 04_jerk_articular.png
+│           ├── 05_continuidad_articular.png
+│           ├── 06_muestreo.png
+│           ├── 07_posicion_cartesiana.png
+│           ├── 08_orientacion_cartesiana.png
+│           ├── datos_procesados.csv
+│           ├── resumen_metricas.csv
+│           └── resumen.txt
+├── src
+│   ├── kuka_eki_bridge
+│   │   ├── config
+│   │   │   ├── axis_command_loop.yaml
+│   │   │   ├── axis_move_better.yaml
+│   │   │   ├── axis_move.yaml
+│   │   │   ├── axis_stream.yaml
+│   │   │   └── eki_server.yaml
+│   │   ├── examples
+│   │   │   ├── axis_command_loop_response_sample.xml
+│   │   │   ├── axis_command_loop_robot_sample.xml
+│   │   │   ├── axis_move_command_sample.xml
+│   │   │   ├── axis_move_robot_sample.xml
+│   │   │   ├── axis_stream_sample.xml
+│   │   │   ├── sample_robot_received.xml
+│   │   │   └── sensor_response.xml
+│   │   ├── kuka_eki_bridge
+│   │   │   ├── axis_command_loop_xml_utils.py
+│   │   │   ├── axis_move_better_xml_utils.py
+│   │   │   ├── axis_move_xml_utils.py
+│   │   │   ├── axis_xml_utils.py
+│   │   │   ├── eki_axis_command_loop_node.py
+│   │   │   ├── eki_axis_command_loop_server.py
+│   │   │   ├── eki_axis_move_better_node.py
+│   │   │   ├── eki_axis_move_node.py
+│   │   │   ├── eki_axis_move_server.py
+│   │   │   ├── eki_axis_stream_node.py
+│   │   │   ├── eki_axis_stream_server.py
+│   │   │   ├── eki_protocol.py
+│   │   │   ├── eki_xml_server_node.py
+│   │   │   ├── __init__.py
+│   │   │   └── xml_utils.py
+│   │   ├── launch
+│   │   │   ├── axis_command_loop.launch.py
+│   │   │   ├── axis_move_better.launch.py
+│   │   │   ├── axis_move.launch.py
+│   │   │   ├── axis_stream.launch.py
+│   │   │   └── eki_server.launch.py
+│   │   ├── package.xml
+│   │   ├── README.md
+│   │   ├── resource
+│   │   │   └── kuka_eki_bridge
+│   │   ├── setup.cfg
+│   │   └── setup.py
+│   ├── kuka_gui_control
+│   │   ├── config
+│   │   │   ├── fastdds_udp_only.xml
+│   │   │   ├── gui_axis_move.yaml
+│   │   │   ├── gui_control.yaml
+│   │   │   └── gui_dual_kuka_rviz.yaml
+│   │   ├── kuka_gui_control
+│   │   │   ├── dual_command_model.py
+│   │   │   ├── dual_kuka_rviz_window.py
+│   │   │   ├── gui_axis_move_node.py
+│   │   │   ├── gui_axis_move_window.py
+│   │   │   ├── gui_control_node.py
+│   │   │   ├── gui_dual_node.py
+│   │   │   ├── gui_window.py
+│   │   │   ├── __init__.py
+│   │   │   ├── joint_command_model.py
+│   │   │   ├── ros_axis_move_bridge.py
+│   │   │   ├── ros_gui_bridge.py
+│   │   │   ├── ros_moveit_mirror_bridge.py
+│   │   │   ├── trajectory_batch_executor.py
+│   │   │   ├── trajectory_batch_model.py
+│   │   │   ├── trajectory_batch_panel.py
+│   │   │   ├── trajectory_executor.py
+│   │   │   ├── trajectory_panel.py
+│   │   │   ├── trajectory_ros_bridge.py
+│   │   │   ├── trajectory_sequence_model.py
+│   │   │   └── trajectory_storage.py
+│   │   ├── launch
+│   │   │   ├── gui_axis_move.launch.py
+│   │   │   ├── gui_control.launch.py
+│   │   │   ├── gui_dual_kuka_rviz.launch.py
+│   │   │   ├── gui_with_axis_move_bridge_better.launch.py
+│   │   │   ├── gui_with_axis_move_bridge.launch.py
+│   │   │   └── gui_with_command_loop.launch.py
+│   │   ├── package.xml
+│   │   ├── README.md
+│   │   ├── resource
+│   │   │   └── kuka_gui_control
+│   │   ├── setup.cfg
+│   │   └── setup.py
+│   └── kuka_telemetry_logger
+│       ├── config
+│       │   └── telemetry_logger.yaml
+│       ├── kuka_telemetry_logger
+│       │   ├── __init__.py
+│       │   ├── message_introspection.py
+│       │   ├── rviz_mirror_node.py
+│       │   ├── storage.py
+│       │   └── telemetry_logger_node.py
+│       ├── launch
+│       │   ├── kuka_rviz_mirror.launch.py
+│       │   └── telemetry_logger.launch.py
+│       ├── package.xml
+│       ├── README.md
+│       ├── README_RVIZ_MIRROR.md
+│       ├── resource
+│       │   └── kuka_telemetry_logger
+│       ├── scripts
+│       │   └── analyze_log.py
+│       ├── setup.cfg
+│       └── setup.py
+└── trajectories
+    ├── baseline_cartesiano corto.json
+    ├── baseline_cartesiano_PAP completo.json
+    ├── baseline_cartesiano_vel5_20260902_074046.json
+    ├── CUADRADO AL VACIO.json
+    ├── CUADRADO FINAL.json
+    ├── PAP.json
+    ├── README.md
+    ├── trajectory_sequence_20260822_164132.json
+    ├── trajectory_sequence_20260828_164806.json
+    └── trajectory_sequence_20260831_193718.json
+
+45 directories, 517 files
